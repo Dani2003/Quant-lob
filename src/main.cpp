@@ -20,6 +20,9 @@
 #include "order_book.hpp"
 #include "ring_buffer.hpp"
 #include "tsc_clock.hpp"
+#include "risk_engine.hpp"
+#include "ouch_messages.hpp"
+#include "order_state_machine.hpp"
 
 using namespace lob;
 
@@ -411,6 +414,69 @@ void run_itch_feed_benchmark() {
     std::cout << "==========================================================\n";
 }
 
+/**
+ * @brief Benchmark 6: Pre-Trade Risk Engine & OUCH Order State Machine Dispatch.
+ */
+void run_risk_and_execution_benchmark() {
+    std::cout << "==========================================================\n";
+    std::cout << "[Benchmark 6] Pre-Trade Risk & OUCH Execution Dispatch\n";
+    std::cout << "==========================================================\n";
+
+    RiskConfig config;
+    config.max_order_qty = 10'000;
+    config.max_order_notional = 1'000'000'00; // $1,000,000
+    config.max_net_position = 50'000;
+    config.price_collar_ticks = 100;
+    config.max_orders_per_second = 10'000'000; // High limit for micro-benchmark
+
+    RiskEngine risk(config);
+    OrderStateMachine<65536> oms;
+    TscClock clock;
+    LatencyHistogram hist(clock);
+
+    constexpr size_t OPS = 500'000;
+    uint8_t ouch_wire_buffer[128];
+    uint32_t reference_mid = 150'00; // $150.00
+
+    const auto start_wall = std::chrono::high_resolution_clock::now();
+
+    for (size_t i = 0; i < OPS; ++i) {
+        uint64_t token = i + 1;
+        uint32_t price = reference_mid + (i % 10);
+        uint32_t qty = 100;
+        uint8_t side = (i % 2 == 0) ? 0 : 1;
+
+        uint64_t t0 = clock.now_cycles();
+
+        // 1. Evaluate Pre-Trade Risk & register in OMS
+        auto* ord = oms.submit_order(token, side, price, qty, reference_mid, t0, risk);
+
+        // 2. Serialize wire-level NASDAQ OUCH 5.0 EnterOrder packet
+        if (__builtin_expect(ord && ord->status == OrderStatus::PendingNew, 1)) {
+            size_t wire_bytes = OuchSerializer::serialize_enter_order(
+                ouch_wire_buffer, token, (side == 0 ? 'B' : 'S'), qty, "AAPL", price
+            );
+            (void)wire_bytes;
+        }
+
+        uint64_t t1 = clock.now_cycles();
+        hist.record(t1 - t0);
+    }
+
+    const auto end_wall = std::chrono::high_resolution_clock::now();
+    const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_wall - start_wall).count();
+    const double elapsed_ms = static_cast<double>(elapsed_ns) / 1'000'000.0;
+    const double ops_per_sec = (static_cast<double>(OPS) / static_cast<double>(elapsed_ns)) * 1e9;
+
+    std::cout << "Orders Evaluated & Serialized: " << OPS << "\n";
+    std::cout << "Elapsed Time                 : " << std::fixed << std::setprecision(3) << elapsed_ms << " ms\n";
+    std::cout << "Throughput                   : " << std::fixed << std::setprecision(2) << (ops_per_sec / 1e6) << " Million ops/sec\n";
+    std::cout << "----------------------------------------------------------\n";
+    std::cout << "Hardware RDTSC Latency Profile (Risk + OMS + OUCH Wire):\n";
+    hist.print("Risk+OUCH Pipeline");
+    std::cout << "==========================================================\n\n";
+}
+
 int main() {
     std::cout << "==========================================================\n";
     std::cout << "  QUANT-LOB: PRODUCTION-GRADE HIGH-FREQUENCY TRADING LOB \n";
@@ -422,6 +488,8 @@ int main() {
     run_memory_pool_benchmark();
     run_lob_matching_benchmark();
     run_itch_feed_benchmark();
+    run_risk_and_execution_benchmark();
 
     return 0;
 }
+

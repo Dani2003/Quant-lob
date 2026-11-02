@@ -1,6 +1,8 @@
 pub mod simd_obi;
+pub mod strategy;
 
 pub use simd_obi::{calculate_micro_price, calculate_obi, Level4Obi, QuantAlphaSignal};
+pub use strategy::{HftAlphaStrategy, StrategyAction, StrategyConfig};
 
 // Explicitly bind the static C++ bridge library compiled by build.rs
 #[link(name = "quant_lob_bridge", kind = "static")]

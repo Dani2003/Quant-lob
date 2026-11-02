@@ -105,8 +105,28 @@ fn main() {
     println!("SIMD Vector Speedup   : {:0.2}x faster", speedup);
     println!("Integrity Check       : {}", if (sink_scalar - sink_simd).abs() < 1e-2 { "VERIFIED [OK]" } else { "MISMATCH" });
 
+    // 6. Benchmark High-Frequency Strategy Decision Engine
+    println!("\n[4/4] Evaluating HFT Market-Making & Alpha Strategy Decisions...");
+    let mut strategy = alpha_engine::HftAlphaStrategy::new(alpha_engine::StrategyConfig::default());
+    let action = strategy.evaluate(&signal);
+    println!("  Generated Action: {:?}", action);
+
+    let start_strat = Instant::now();
+    let mut actions_taken = 0usize;
+    for _ in 0..BENCH_ITERS {
+        let act = strategy.evaluate(&signal);
+        if act != alpha_engine::StrategyAction::Hold {
+            actions_taken += 1;
+        }
+    }
+    let dur_strat = start_strat.elapsed();
+    let strat_ns = dur_strat.as_nanos() as f64 / BENCH_ITERS as f64;
+    println!("  Strategy Decision Latency: {:0.2} ns / evaluation ({:0.2} M decisions/sec)",
+             strat_ns, (BENCH_ITERS as f64 / dur_strat.as_secs_f64()) / 1e6);
+
     println!("\n==========================================================");
-    println!("  ALPHA ENGINE READY FOR PRODUCTION DEPLOYMENT            ");
+    println!("  ALPHA & EXECUTION ENGINE READY FOR PRODUCTION           ");
     println!("==========================================================");
 }
+
 

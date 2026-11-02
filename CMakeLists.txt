@@ -65,3 +65,10 @@ add_executable(lob_tests
     tests/test_order_book.cpp
 )
 target_link_libraries(lob_tests PRIVATE lob_engine)
+
+# Pre-Trade Risk & Execution Gateway Invariant Tests
+add_executable(lob_risk_tests
+    tests/test_risk_and_execution.cpp
+)
+target_link_libraries(lob_risk_tests PRIVATE lob_engine)
+
