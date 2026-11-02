@@ -1,0 +1,54 @@
+name: Quant-LOB CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    name: Build & Verify (C++20, Rust SIMD, Python)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up C++ Build Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build g++-13
+
+      - name: Set up Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build C++20 Order Book & Benchmarks
+        run: |
+          mkdir -p build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-13 ..
+          cmake --build . --config Release --parallel
+
+      - name: Run C++ Invariant Test Suites
+        run: |
+          ./build/lob_tests
+          ./build/lob_risk_tests
+          ./build/lob_network_tca_tests
+
+      - name: Run C++ Hardware RDTSC Latency Benchmarks
+        run: |
+          ./build/lob_benchmark
+
+      - name: Run Rust Alpha Engine & SIMD OBI Benchmark
+        run: |
+          cd alpha_engine
+          cargo run --release
+
+      - name: Run Python Quantitative Backtest & TCA Suite
+        run: |
+          python3 python/run_quant_backtest.py

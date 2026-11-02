@@ -3,7 +3,9 @@
 [![C++20](https://img.shields.io/badge/Language-C%2B%2B20-00599C?logo=cplusplus)](https://en.cppreference.com/w/cpp/20)
 [![Rust](https://img.shields.io/badge/Language-Rust_2021-DEA584?logo=rust)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/Language-Python_3.10+-3776AB?logo=python)](https://python.org/)
+[![Build & Test CI](https://github.com/Dani2003/Quant-lob/actions/workflows/ci.yml/badge.svg)](https://github.com/Dani2003/Quant-lob/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 
 A production-grade, sub-microsecond **Price-Time Priority (FIFO) Limit Order Book (LOB)**, **Sub-30ns Pre-Trade Risk Gateway**, **NASDAQ MoldUDP64 Multicast Ingestion Engine**, and **Quantitative Alpha / Backtesting SDK** engineered for institutional High-Frequency Trading (HFT) and automated market making.
 
