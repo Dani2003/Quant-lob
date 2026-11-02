@@ -1,12 +1,10 @@
 name: Quant-LOB CI
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+  workflow_dispatch: # Manual trigger only, stops auto-running on git push
 
 jobs:
+
   build-and-test:
     name: Build & Verify (C++20, Rust SIMD, Python)
     runs-on: ubuntu-latest

@@ -9,9 +9,16 @@
 
 #if defined(__linux__)
 #include <sys/mman.h>
-#include <numa.h>
-#include <numaif.h>
+#include <sys/syscall.h>
 #include <unistd.h>
+
+#ifndef MPOL_BIND
+#define MPOL_BIND 2
+#endif
+
+#ifndef MPOL_MF_MOVE
+#define MPOL_MF_MOVE (1 << 1)
+#endif
 #endif
 
 #if defined(_WIN32)
@@ -35,7 +42,7 @@ public:
      * @param numa_node Target NUMA node ID (e.g., 0 for Socket 0)
      */
     static void* allocate_on_node(size_t size, int numa_node = 0) noexcept {
-        // Align up to 2MB Hugepage boundary or standard 4KB page
+        // Align up to standard 4KB page boundary
         constexpr size_t PageSize = 4096;
         size_t aligned_size = (size + PageSize - 1) & ~(PageSize - 1);
 
@@ -47,12 +54,16 @@ public:
             return nullptr;
         }
 
-        // Bind memory to target NUMA node
+        // Bind memory to target NUMA node using direct Linux kernel syscall
+#if defined(SYS_mbind)
         unsigned long nodemask = (1UL << numa_node);
-        long ret = ::mbind(ptr, aligned_size, MPOL_BIND, &nodemask, sizeof(nodemask) * 8, MPOL_MF_MOVE);
+        long ret = ::syscall(SYS_mbind, ptr, aligned_size, MPOL_BIND, &nodemask, sizeof(nodemask) * 8, MPOL_MF_MOVE);
         (void)ret;
+#else
+        (void)numa_node;
+#endif
 
-        // Lock memory into RAM to prevent page swapping
+        // Lock memory into RAM to prevent OS swapping
         ::mlock(ptr, aligned_size);
 
         // Pre-fault all pages: touch every 4KB page to eliminate runtime page faults
@@ -81,7 +92,7 @@ public:
         return ptr;
 
 #else
-        // Standard portable aligned allocation
+        (void)numa_node;
         void* ptr = nullptr;
         if (posix_memalign(&ptr, 64, aligned_size) != 0) {
             return nullptr;
@@ -113,4 +124,3 @@ public:
 };
 
 } // namespace lob
-
