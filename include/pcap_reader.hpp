@@ -109,9 +109,9 @@ public:
         }
     }
 
-    /// Replay the entire PCAP stream into a MoldUdp64 parser zero-copy
-    template <size_t MaxGaps>
-    size_t replay(MoldUdp64Parser<MaxGaps>& parser) {
+    /// Replay the entire PCAP stream into a parser or engine zero-copy
+    template <typename ParserType>
+    size_t replay(ParserType& parser) {
         if (!file_.is_open()) return 0;
 
         size_t packets_replayed = 0;
