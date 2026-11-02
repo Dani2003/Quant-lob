@@ -74,3 +74,4 @@ size_t FeedHandler::process_packet(const uint8_t* buffer, size_t bytes_available
 }
 
 } // namespace lob
+

@@ -106,3 +106,4 @@ cargo run --release
 | **Direct Indexing vs std::map** | `std::map` is a red-black tree requiring $O(\log N)$ pointer traversals and heap-allocated nodes, leading to severe L1/L2 cache misses. Direct flat array indexing delivers guaranteed $O(1)$ memory access in a single CPU instruction. |
 | **SIMD Vectorization** | Rather than running a loop with sequential subtractions, additions, and divisions, SIMD instructions (`_mm_sub_ps`, `_mm_div_ps`) process 4 depth levels simultaneously in a single clock cycle. |
 | **Micro-Price** | Standard mid-price $(P_B + P_A)/2$ ignores queue volume imbalance. Stoikov's Micro-Price weights price by volume, correctly predicting short-term tick drift toward the thinner side of the book. |
+
