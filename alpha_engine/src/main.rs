@@ -1,6 +1,9 @@
 use alpha_engine::{calculate_obi, simd_obi::calculate_obi_scalar, AlphaEngine};
 use std::time::Instant;
 
+#[link(name = "quant_lob_bridge")]
+extern "C" {}
+
 fn main() {
     println!("==========================================================");
     println!("  QUANT-LOB: RUST FFI ALPHA ENGINE & SIMD OBI BENCHMARK  ");

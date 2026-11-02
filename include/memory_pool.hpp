@@ -6,11 +6,9 @@
 #include <type_traits>
 #include <utility>
 
-#ifdef __cpp_lib_hardware_interference_size
-using std::hardware_destructive_interference_size;
-#else
-constexpr size_t hardware_destructive_interference_size = 64;
-#endif
+// Standard 64-byte cache line size (prevents false sharing on L1/L2 caches without compiler warnings)
+inline constexpr size_t HardwareDestructiveInterferenceSize = 64;
+inline constexpr size_t hardware_destructive_interference_size = HardwareDestructiveInterferenceSize;
 
 namespace lob {
 

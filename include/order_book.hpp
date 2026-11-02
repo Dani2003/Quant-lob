@@ -200,8 +200,8 @@ public:
 
 private:
     struct OrderMapEntry {
-        uint64_t order_id{0};
-        OrderNode* node{nullptr};
+        uint64_t order_id;
+        OrderNode* node;
     };
 
     // Internal matching engines

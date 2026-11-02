@@ -2,11 +2,15 @@ pub mod simd_obi;
 
 pub use simd_obi::{calculate_obi, Level4Obi};
 
-#[cxx::bridge(namespace = "lob::ffi")]
+// Explicitly bind the static C++ bridge library compiled by build.rs
+#[link(name = "quant_lob_bridge", kind = "static")]
+extern "C" {}
+
+#[cxx::bridge(namespace = "lob")]
 pub mod ffi {
     /// Shared memory snapshot of Top-5 price/volume levels.
-    /// Perfectly aligned to 16 bytes for zero-copy SIMD processing.
-    #[derive(Debug, Clone, Copy)]
+    /// Aligned for zero-copy SIMD vector processing.
+    #[derive(Debug, Clone, Copy, Default)]
     pub struct Top5View {
         pub bid_prices: [u32; 5],
         pub bid_volumes: [u32; 5],
@@ -25,8 +29,8 @@ pub mod ffi {
         fn new_order_book() -> UniquePtr<OrderBook>;
 
         /// Hot-path Limit Order submission.
-        fn add_limit_order(
-            self: Pin<&mut OrderBook>,
+        fn order_book_add_limit(
+            book: Pin<&mut OrderBook>,
             order_id: u64,
             client_id: u64,
             side: u8,
@@ -36,8 +40,8 @@ pub mod ffi {
         ) -> bool;
 
         /// Hot-path Market Order submission.
-        fn add_market_order(
-            self: Pin<&mut OrderBook>,
+        fn order_book_add_market(
+            book: Pin<&mut OrderBook>,
             order_id: u64,
             client_id: u64,
             side: u8,
@@ -46,10 +50,10 @@ pub mod ffi {
         ) -> bool;
 
         /// Hot-path Order Cancellation by ID in O(1).
-        fn cancel_order(self: Pin<&mut OrderBook>, order_id: u64) -> bool;
+        fn order_book_cancel(book: Pin<&mut OrderBook>, order_id: u64) -> bool;
 
-        /// Zero-copy read of Top-5 levels directly from C++ memory.
-        fn get_top5_snapshot(book: &OrderBook) -> Top5View;
+        /// Zero-copy read of Top-5 levels directly into caller's memory.
+        fn get_top5_snapshot(book: &OrderBook, out: &mut Top5View);
     }
 }
 
@@ -78,7 +82,8 @@ impl AlphaEngine {
         quantity: u32,
         timestamp_ns: u64,
     ) -> bool {
-        self.book.pin_mut().add_limit_order(
+        ffi::order_book_add_limit(
+            self.book.pin_mut(),
             order_id,
             client_id,
             side,
@@ -98,7 +103,8 @@ impl AlphaEngine {
         quantity: u32,
         timestamp_ns: u64,
     ) -> bool {
-        self.book.pin_mut().add_market_order(
+        ffi::order_book_add_market(
+            self.book.pin_mut(),
             order_id,
             client_id,
             side,
@@ -110,13 +116,15 @@ impl AlphaEngine {
     /// Cancel an active resting order in O(1).
     #[inline(always)]
     pub fn cancel_order(&mut self, order_id: u64) -> bool {
-        self.book.pin_mut().cancel_order(order_id)
+        ffi::order_book_cancel(self.book.pin_mut(), order_id)
     }
 
     /// Reads Top-5 Market Depth from C++ without heap allocation.
     #[inline(always)]
     pub fn get_top5_snapshot(&self) -> ffi::Top5View {
-        ffi::get_top5_snapshot(&self.book)
+        let mut snapshot = ffi::Top5View::default();
+        ffi::get_top5_snapshot(&self.book, &mut snapshot);
+        snapshot
     }
 
     /// Calculates SIMD-accelerated Order Book Imbalance (OBI) across the top levels.
@@ -134,4 +142,3 @@ impl Default for AlphaEngine {
         Self::new()
     }
 }
-
