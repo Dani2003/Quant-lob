@@ -81,7 +81,7 @@ impl HftAlphaStrategy {
         let best_bid = (signal.mid_price - (signal.spread_ticks as f64 / 2.0)).round() as u32;
         let best_ask = (signal.mid_price + (signal.spread_ticks as f64 / 2.0)).round() as u32;
 
-        let top_obi = signal.obi.l1;
+        let top_obi = signal.obi.levels[0];
 
         // 2. High Conviction Alpha: Strong Imbalance & Micro-Price Drift
         if top_obi > self.config.obi_threshold && reservation_price > signal.mid_price {
