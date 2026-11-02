@@ -21,6 +21,9 @@ Quant-LOB
 │   ├── order_book.hpp           # Direct flat-array tick indexing & intrusive doubly-linked ladders
 │   ├── feed_handler.hpp         # Binary NASDAQ ITCH 5.0 wire protocol packet parser
 │   ├── mold_udp64.hpp           # NASDAQ MoldUDP64 Multicast session packet parser & gap detection
+│   ├── pcap_reader.hpp          # Deterministic binary PCAP packet capture reader & replay engine
+│   ├── kernel_bypass_xdp.hpp    # Linux AF_XDP (XSK) zero-copy kernel bypass packet ingress
+│   ├── numa_alloc.hpp           # Institutional NUMA-aware page-locked memory allocator
 │   ├── risk_engine.hpp          # Sub-30ns Pre-Trade Risk Engine (Fat-finger, collars, rate limit, kill-switch)
 │   ├── ouch_messages.hpp        # Binary NASDAQ OUCH 5.0 order entry wire serialization ('O', 'X', 'A', 'E')
 │   ├── order_state_machine.hpp  # Zero-allocation Order State Machine (OMS) lifecycle manager
@@ -36,7 +39,8 @@ Quant-LOB
 ├── tests/
 │   ├── test_order_book.cpp      # Matching engine invariant unit tests (FIFO, sweeps, cancels)
 │   ├── test_risk_and_execution.cpp # Pre-trade risk, PnL accounting, and OUCH lifecycle tests
-│   └── test_network_and_tca.cpp # MoldUDP64 gap recovery & TCA markout unit tests
+│   ├── test_network_and_tca.cpp # MoldUDP64 gap recovery & TCA markout unit tests
+│   └── test_pcap_and_numa.cpp   # Deterministic PCAP replay, AF_XDP & NUMA invariant tests
 ├── alpha_engine/                # Rust Quantitative Intelligence Layer (via cxx crate)
 │   ├── build.rs                 # CXX FFI native build script
 │   ├── include/
@@ -128,6 +132,7 @@ cmake --build . --config Release
 ./lob_tests                 # Core LOB engine tests
 ./lob_risk_tests            # Pre-trade risk & OMS tests
 ./lob_network_tca_tests     # MoldUDP64 & TCA markout tests
+./lob_pcap_tests            # PCAP replay, AF_XDP & NUMA tests
 
 # Run 6-stage production benchmark suite
 ./lob_benchmark

@@ -78,6 +78,12 @@ add_executable(lob_network_tca_tests
 )
 target_link_libraries(lob_network_tca_tests PRIVATE lob_engine)
 
+# Deterministic PCAP Replay, AF_XDP & NUMA Invariant Tests
+add_executable(lob_pcap_tests
+    tests/test_pcap_and_numa.cpp
+)
+target_link_libraries(lob_pcap_tests PRIVATE lob_engine)
+
 # Shared C-ABI Library for Python Quant Research SDK
 add_library(quant_lob SHARED
     src/order_book.cpp
