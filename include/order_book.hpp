@@ -5,8 +5,6 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <span>
-#include <vector>
 
 #include "memory_pool.hpp"
 
@@ -113,6 +111,19 @@ struct MarketDepth {
 };
 
 /**
+ * @brief Contiguous Top-5 bid/ask snapshot designed specifically for zero-copy FFI and SIMD.
+ * Fixed 32-bit integer arrays aligned to 16 bytes for direct vector load instructions.
+ */
+struct alignas(16) Top5BookView {
+    uint32_t bid_prices[5]{0};
+    uint32_t bid_volumes[5]{0};
+    uint32_t ask_prices[5]{0};
+    uint32_t ask_volumes[5]{0};
+    uint32_t bid_depth{0};
+    uint32_t ask_depth{0};
+};
+
+/**
  * @brief Sub-microsecond Price-Time Priority Limit Order Book (LOB).
  *
  * Engineered for HFT production requirements:
@@ -178,6 +189,7 @@ public:
     [[nodiscard]] uint64_t get_total_matched_volume() const noexcept { return total_matched_volume_; }
 
     [[nodiscard]] MarketDepth get_depth(size_t max_levels = 5) const noexcept;
+    void get_top5_view(Top5BookView& out) const noexcept;
 
     void set_trade_callback(TradeCallback callback, void* user_data = nullptr) noexcept {
         trade_callback_ = callback;

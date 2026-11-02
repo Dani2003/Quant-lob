@@ -4,7 +4,6 @@
 #include <iostream>
 #include <memory>
 #include <numeric>
-#include <random>
 #include <thread>
 #include <vector>
 
@@ -22,11 +21,12 @@
 using namespace lob;
 
 constexpr size_t TOTAL_ORDERS = 1'000'000;
-constexpr size_t RING_BUFFER_CAPACITY = 65536; // 64K slots
+constexpr size_t RING_BUFFER_CAPACITY = 65536; // 64K slots (power of 2)
 constexpr size_t MEMORY_POOL_CAPACITY = 65536;
 
 /**
- * @brief Benchmark 1: Sequential Push & Pop Loop through RingBuffer.
+ * @brief Benchmark 1: Pipelined Single-Threaded Push & Pop Loop through RingBuffer.
+ * Measures raw per-operation queue latency and zero-allocation efficiency.
  */
 void run_sequential_ring_buffer_benchmark() {
     std::cout << "==========================================================\n";
@@ -70,6 +70,7 @@ void run_sequential_ring_buffer_benchmark() {
 
 /**
  * @brief Benchmark 2: Concurrent Multi-Threaded SPSC Benchmark.
+ * Producer thread pushes 1M orders, Consumer thread pops concurrently across distinct cores.
  */
 void run_concurrent_spsc_benchmark() {
     std::cout << "==========================================================\n";
@@ -82,6 +83,7 @@ void run_concurrent_spsc_benchmark() {
     uint64_t popped_checksum = 0;
     size_t popped_count = 0;
 
+    // Consumer Thread
     std::thread consumer([&]() {
         while (!start_signal.load(std::memory_order_acquire)) {
             CPU_PAUSE();
@@ -98,6 +100,7 @@ void run_concurrent_spsc_benchmark() {
         }
     });
 
+    // Producer Thread
     const auto start_time = std::chrono::high_resolution_clock::now();
     start_signal.store(true, std::memory_order_release);
 
@@ -133,6 +136,42 @@ void run_concurrent_spsc_benchmark() {
 }
 
 /**
+ * @brief Benchmark 3: Zero-Allocation Memory Pool Hot-Path Benchmark.
+ */
+void run_memory_pool_benchmark() {
+    std::cout << "==========================================================\n";
+    std::cout << "[Benchmark 3] Pre-Allocated Memory Pool (" << TOTAL_ORDERS << " Alloc/Deallocs)\n";
+    std::cout << "==========================================================\n";
+
+    static MemoryPool<Order, MEMORY_POOL_CAPACITY> pool;
+    constexpr size_t BATCH_SIZE = 4096;
+    std::vector<Order*> active_orders(BATCH_SIZE, nullptr);
+
+    const auto start_time = std::chrono::high_resolution_clock::now();
+
+    const size_t iterations = TOTAL_ORDERS / BATCH_SIZE;
+    for (size_t iter = 0; iter < iterations; ++iter) {
+        for (size_t i = 0; i < BATCH_SIZE; ++i) {
+            active_orders[i] = pool.allocate();
+            active_orders[i]->order_id = iter * BATCH_SIZE + i;
+        }
+
+        for (size_t i = 0; i < BATCH_SIZE; ++i) {
+            pool.deallocate(active_orders[i]);
+        }
+    }
+
+    const auto end_time = std::chrono::high_resolution_clock::now();
+    const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
+    const double elapsed_ms = static_cast<double>(elapsed_ns) / 1'000'000.0;
+    const double avg_cost_ns = static_cast<double>(elapsed_ns) / static_cast<double>(iterations * BATCH_SIZE * 2);
+
+    std::cout << "Total Elapsed Time : " << std::fixed << std::setprecision(3) << elapsed_ms << " ms\n";
+    std::cout << "Avg Cost / Alloc   : " << std::fixed << std::setprecision(2) << avg_cost_ns << " ns (Zero kernel overhead)\n";
+    std::cout << "Pool Availability  : " << pool.available() << " / " << pool.capacity() << " slots available\n\n";
+}
+
+/**
  * @brief Command representation for simulated continuous order book stream.
  */
 struct OrderCommand {
@@ -150,7 +189,7 @@ struct OrderCommand {
 };
 
 /**
- * @brief Benchmark 3: Phase 2 Core LOB Matching Engine Throughput.
+ * @brief Benchmark 4: Core Limit Order Book (LOB) Matching Stream.
  * Simulates a continuous realistic order book feed:
  * - 60% Passive Limit orders (liquidity providing / resting)
  * - 25% Aggressive crossing Limit & Market orders (immediate matches/executions)
@@ -158,7 +197,7 @@ struct OrderCommand {
  */
 void run_lob_matching_benchmark() {
     std::cout << "==========================================================\n";
-    std::cout << "[Benchmark 3] Core Limit Order Book (LOB) Matching Stream\n";
+    std::cout << "[Benchmark 4] Core Limit Order Book (LOB) Matching Stream\n";
     std::cout << "==========================================================\n";
 
     constexpr size_t STREAM_SIZE = 1'000'000;
@@ -331,6 +370,7 @@ int main() {
 
     run_sequential_ring_buffer_benchmark();
     run_concurrent_spsc_benchmark();
+    run_memory_pool_benchmark();
     run_lob_matching_benchmark();
 
     return 0;

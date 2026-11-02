@@ -393,6 +393,35 @@ MarketDepth OrderBook::get_depth(size_t max_levels) const noexcept {
     return depth;
 }
 
+void OrderBook::get_top5_view(Top5BookView& out) const noexcept {
+    out.bid_depth = 0;
+    out.ask_depth = 0;
+
+    const PriceLevel* bid = best_bid_level_;
+    while (bid && out.bid_depth < 5) {
+        out.bid_prices[out.bid_depth] = bid->price;
+        out.bid_volumes[out.bid_depth] = bid->total_volume;
+        ++out.bid_depth;
+        bid = bid->next_level;
+    }
+    for (size_t i = out.bid_depth; i < 5; ++i) {
+        out.bid_prices[i] = 0;
+        out.bid_volumes[i] = 0;
+    }
+
+    const PriceLevel* ask = best_ask_level_;
+    while (ask && out.ask_depth < 5) {
+        out.ask_prices[out.ask_depth] = ask->price;
+        out.ask_volumes[out.ask_depth] = ask->total_volume;
+        ++out.ask_depth;
+        ask = ask->next_level;
+    }
+    for (size_t i = out.ask_depth; i < 5; ++i) {
+        out.ask_prices[i] = 0;
+        out.ask_volumes[i] = 0;
+    }
+}
+
 void OrderBook::clear() noexcept {
     order_pool_->reset();
     for (uint32_t p = 0; p < MAX_PRICE_TICKS; ++p) {

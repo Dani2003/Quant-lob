@@ -1,0 +1,28 @@
+[package]
+name = "alpha_engine"
+version = "0.1.0"
+edition = "2021"
+authors = ["Staff HFT Quantitative Systems Engineer"]
+description = "High-performance Rust Alpha Engine calculating SIMD-accelerated Order Book Imbalance via CXX FFI"
+
+[lib]
+name = "alpha_engine"
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "alpha_engine_bench"
+path = "src/main.rs"
+
+[dependencies]
+cxx = "1.0"
+
+[build-dependencies]
+cxx-build = "1.0"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+overflow-checks = false
+
