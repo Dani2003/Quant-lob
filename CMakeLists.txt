@@ -44,6 +44,7 @@ endif()
 add_library(lob_engine STATIC
     src/order_book.cpp
     src/feed_handler.cpp
+    src/trading_engine.cpp
 )
 
 target_include_directories(lob_engine
@@ -53,6 +54,10 @@ target_include_directories(lob_engine
 
 find_package(Threads REQUIRED)
 target_link_libraries(lob_engine PUBLIC Threads::Threads)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(lob_engine PUBLIC rt)
+endif()
+
 
 # Benchmark Suite Executable
 add_executable(lob_benchmark
@@ -95,5 +100,21 @@ target_include_directories(quant_lob
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 target_link_libraries(quant_lob PUBLIC Threads::Threads)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(quant_lob PUBLIC rt)
+endif()
+
+# Production 4-Core Pipelined Trading Engine Service
+add_executable(lob_engine_service
+    src/trading_engine_main.cpp
+)
+target_link_libraries(lob_engine_service PRIVATE lob_engine)
+
+# Standalone High-Speed Binary PCAP Replay CLI Tool
+add_executable(lob_pcap_replay
+    tools/pcap_replay_tool.cpp
+)
+target_link_libraries(lob_pcap_replay PRIVATE lob_engine)
+
 
 

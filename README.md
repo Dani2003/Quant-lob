@@ -29,13 +29,19 @@ Quant-LOB
 │   ├── order_state_machine.hpp  # Zero-allocation Order State Machine (OMS) lifecycle manager
 │   ├── tca_engine.hpp           # Real-time Transaction Cost Analysis (TCA) & Adverse Selection markout engine
 │   ├── quant_lob_c_api.h        # High-performance C-ABI bridge for Python bindings
+│   ├── shm_telemetry.hpp        # Lock-free POSIX Shared Memory telemetry block (/dev/shm)
+│   ├── trading_engine.hpp       # Autonomous 4-Core Pipelined Trading Engine
 │   ├── tsc_clock.hpp            # Sub-nanosecond RDTSC CPU cycle profiler (P50/P99/P99.9 metrics)
 │   └── cpu_affinity.hpp         # OS core pinning (pthread_setaffinity_np / SetThreadAffinityMask)
 ├── src/
 │   ├── order_book.cpp           # Matching engine implementation
 │   ├── feed_handler.cpp         # Zero-copy binary ITCH parser
 │   ├── quant_lob_c_api.cpp      # C-ABI export implementations
+│   ├── trading_engine.cpp       # 4-Core engine implementation (Ingress, Matcher, Alpha, Execution)
+│   ├── trading_engine_main.cpp  # Production trading engine service entrypoint (lob_engine_service)
 │   └── main.cpp                 # 6-Stage production benchmark suite (LOB, ITCH, Risk, OMS)
+├── tools/
+│   └── pcap_replay_tool.cpp     # Standalone line-rate binary PCAP replay CLI tool (lob_pcap_replay)
 ├── tests/
 │   ├── test_order_book.cpp      # Matching engine invariant unit tests (FIFO, sweeps, cancels)
 │   ├── test_risk_and_execution.cpp # Pre-trade risk, PnL accounting, and OUCH lifecycle tests
@@ -55,7 +61,9 @@ Quant-LOB
 │   │   ├── __init__.py
 │   │   ├── engine.py            # ctypes bridge to C++ matching engine
 │   │   └── backtester.py        # Event-driven backtester with markout TCA curves
-│   └── run_quant_backtest.py    # 50,000 tick market making simulation demo
+│   ├── run_quant_backtest.py    # 50,000 tick market making simulation demo
+│   └── monitor_dashboard.py     # Live ASCII institutional trading terminal
+
 └── CMakeLists.txt               # Standard C++20 Release configuration (-O3 -march=native -flto)
 ```
 
@@ -136,6 +144,12 @@ cmake --build . --config Release
 
 # Run 6-stage production benchmark suite
 ./lob_benchmark
+
+# Run the 4-Core Autonomous Trading Engine Service
+./lob_engine_service --symbol AAPL --packets 100000
+
+# Run the High-Speed Standalone PCAP Replay CLI
+./lob_pcap_replay --generate 50000
 ```
 
 ### 2. Rust FFI Alpha Engine & Strategy (Cargo)
@@ -147,14 +161,18 @@ cd "/mnt/d/NetSol Internship/Quant-lob/alpha_engine"
 cargo run --release
 ```
 
-### 3. Python Quantitative Research & Backtesting
+### 3. Python Quantitative Research & Terminal Dashboard
 
 ```bash
 cd "/mnt/d/NetSol Internship/Quant-lob"
 
 # Run 50,000 tick market making backtest with full TCA reporting
-python python/run_quant_backtest.py
+python3 python/run_quant_backtest.py
+
+# Launch the Live Terminal Telemetry Dashboard
+python3 python/monitor_dashboard.py
 ```
+
 
 ---
 
