@@ -6,9 +6,13 @@
 #include <type_traits>
 #include <utility>
 
+#ifndef QUANT_LOB_CACHE_LINE_SIZE_HPP
+#define QUANT_LOB_CACHE_LINE_SIZE_HPP
 // Standard 64-byte cache line size (prevents false sharing on L1/L2 caches without compiler warnings)
 inline constexpr size_t HardwareDestructiveInterferenceSize = 64;
 inline constexpr size_t hardware_destructive_interference_size = HardwareDestructiveInterferenceSize;
+#endif
+
 
 namespace lob {
 

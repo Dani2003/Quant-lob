@@ -180,3 +180,4 @@ double lob_calculate_micro_price(
 }
 
 } // extern "C"
+

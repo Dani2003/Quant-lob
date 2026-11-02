@@ -95,3 +95,4 @@ QUANT_LOB_API double lob_calculate_micro_price(
 #ifdef __cplusplus
 }
 #endif
+

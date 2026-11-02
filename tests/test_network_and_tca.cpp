@@ -4,6 +4,7 @@
 #include "../include/mold_udp64.hpp"
 #include "../include/tca_engine.hpp"
 #include "../include/order_book.hpp"
+#include "../include/ouch_messages.hpp"
 
 using namespace lob;
 
@@ -145,3 +146,4 @@ int main() {
     std::cout << "==========================================================\n";
     return 0;
 }
+

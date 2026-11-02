@@ -271,8 +271,8 @@ void run_lob_matching_benchmark() {
 
     // Warm-up initial book
     for (uint32_t p = 1; p <= 10; ++p) {
-        book->add_limit_order(next_order_id++, 100, Side::Buy, BASE_MID_PRICE - p, 100);
-        book->add_limit_order(next_order_id++, 100, Side::Sell, BASE_MID_PRICE + p, 100);
+        (void)book->add_limit_order(next_order_id++, 100, Side::Buy, BASE_MID_PRICE - p, 100);
+        (void)book->add_limit_order(next_order_id++, 100, Side::Sell, BASE_MID_PRICE + p, 100);
     }
 
     const auto start_time = std::chrono::high_resolution_clock::now();
@@ -282,19 +282,20 @@ void run_lob_matching_benchmark() {
 
         switch (cmd.action) {
             case OrderCommand::Action::AddLimit:
-                book->add_limit_order(cmd.order_id, 1, cmd.side, cmd.price, cmd.quantity);
+                (void)book->add_limit_order(cmd.order_id, 1, cmd.side, cmd.price, cmd.quantity);
                 break;
             case OrderCommand::Action::AddMarket:
-                book->add_market_order(cmd.order_id, 1, cmd.side, cmd.quantity);
+                (void)book->add_market_order(cmd.order_id, 1, cmd.side, cmd.quantity);
                 break;
             case OrderCommand::Action::Cancel:
-                book->cancel_order(cmd.order_id);
+                (void)book->cancel_order(cmd.order_id);
                 break;
         }
 
         const uint64_t t1 = TscClock::rdtsc();
         profiler.record_cycles(t0, t1);
     }
+
 
     const auto end_time = std::chrono::high_resolution_clock::now();
 
@@ -374,9 +375,10 @@ void run_itch_feed_benchmark() {
 
     constexpr size_t MSG_COUNT = 500'000;
     std::vector<itch::AddOrderMsg> binary_stream(MSG_COUNT);
+    uint16_t add_order_len = 36;
 
     for (size_t i = 0; i < MSG_COUNT; ++i) {
-        binary_stream[i].length = itch::read_be16(&itch::AddOrderMsg{}.length); // 36 bytes payload
+        binary_stream[i].length = itch::read_be16(&add_order_len); // 36 bytes payload
         binary_stream[i].message_type = 'A';
         binary_stream[i].stock_locate = 1;
         binary_stream[i].order_ref_num = itch::read_be64(&i);
@@ -387,6 +389,7 @@ void run_itch_feed_benchmark() {
         binary_stream[i].price = itch::read_be32(&price);
         std::memcpy(binary_stream[i].stock, "AAPL    ", 8);
     }
+
 
     const auto* raw_ptr = reinterpret_cast<const uint8_t*>(binary_stream.data());
     const size_t total_bytes = MSG_COUNT * sizeof(itch::AddOrderMsg);
@@ -431,8 +434,7 @@ void run_risk_and_execution_benchmark() {
 
     RiskEngine risk(config);
     OrderStateMachine<65536> oms;
-    TscClock clock;
-    LatencyHistogram hist(clock);
+    LatencyProfiler<500'000> profiler;
 
     constexpr size_t OPS = 500'000;
     uint8_t ouch_wire_buffer[128];
@@ -446,7 +448,7 @@ void run_risk_and_execution_benchmark() {
         uint32_t qty = 100;
         uint8_t side = (i % 2 == 0) ? 0 : 1;
 
-        uint64_t t0 = clock.now_cycles();
+        const uint64_t t0 = TscClock::rdtsc();
 
         // 1. Evaluate Pre-Trade Risk & register in OMS
         auto* ord = oms.submit_order(token, side, price, qty, reference_mid, t0, risk);
@@ -459,8 +461,8 @@ void run_risk_and_execution_benchmark() {
             (void)wire_bytes;
         }
 
-        uint64_t t1 = clock.now_cycles();
-        hist.record(t1 - t0);
+        const uint64_t t1 = TscClock::rdtsc();
+        profiler.record_cycles(t0, t1);
     }
 
     const auto end_wall = std::chrono::high_resolution_clock::now();
@@ -472,9 +474,9 @@ void run_risk_and_execution_benchmark() {
     std::cout << "Elapsed Time                 : " << std::fixed << std::setprecision(3) << elapsed_ms << " ms\n";
     std::cout << "Throughput                   : " << std::fixed << std::setprecision(2) << (ops_per_sec / 1e6) << " Million ops/sec\n";
     std::cout << "----------------------------------------------------------\n";
-    std::cout << "Hardware RDTSC Latency Profile (Risk + OMS + OUCH Wire):\n";
-    hist.print("Risk+OUCH Pipeline");
+    profiler.print_report("Risk+OUCH Pipeline");
     std::cout << "==========================================================\n\n";
+
 }
 
 int main() {

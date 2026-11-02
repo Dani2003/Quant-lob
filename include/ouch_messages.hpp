@@ -79,6 +79,13 @@ struct OuchOrderRejected {
 #pragma pack(pop)
 
 /// Endian conversion utilities (OUCH wire format is Big-Endian network order)
+inline uint16_t to_big_endian16(uint16_t val) noexcept {
+    if constexpr (std::endian::native == std::endian::little) {
+        return __builtin_bswap16(val);
+    }
+    return val;
+}
+
 inline uint32_t to_big_endian32(uint32_t val) noexcept {
     if constexpr (std::endian::native == std::endian::little) {
         return __builtin_bswap32(val);
@@ -93,6 +100,10 @@ inline uint64_t to_big_endian64(uint64_t val) noexcept {
     return val;
 }
 
+inline uint16_t from_big_endian16(uint16_t val) noexcept {
+    return to_big_endian16(val);
+}
+
 inline uint32_t from_big_endian32(uint32_t val) noexcept {
     return to_big_endian32(val);
 }
@@ -100,6 +111,7 @@ inline uint32_t from_big_endian32(uint32_t val) noexcept {
 inline uint64_t from_big_endian64(uint64_t val) noexcept {
     return to_big_endian64(val);
 }
+
 
 /// Zero-copy Serializer for Outbound OUCH Packets
 class OuchSerializer {
