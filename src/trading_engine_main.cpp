@@ -49,21 +49,28 @@ int main(int argc, char** argv) {
         }
     }
 
-    PipelinedTradingEngine engine(config);
+    auto engine = std::make_unique<PipelinedTradingEngine>(config);
     std::cout << "[1/3] Initializing 4-Core Autonomous Trading Engine...\n";
     std::cout << "  Core Mapping: Ingress [Core " << config.core_ingress 
               << "] | Matcher [Core " << config.core_matching
               << "] | Alpha [Core " << config.core_strategy
               << "] | Execution [Core " << config.core_execution << "]\n";
 
-    engine.start();
+    engine->start();
     std::cout << "[2/3] Trading Engine threads pinned and running.\n";
 
     const auto start_wall = std::chrono::high_resolution_clock::now();
 
     if (!pcap_file.empty()) {
         std::cout << "[3/3] Streaming Historical PCAP Market Capture: " << pcap_file << "\n";
-        // Replay PCAP
+        PcapReader reader;
+        if (reader.open(pcap_file)) {
+            size_t count = reader.replay(*engine);
+            std::cout << "  PCAP Replay Finished: " << count << " packets ingested.\n";
+            reader.close();
+        } else {
+            std::cerr << "  Failed to open PCAP file: " << pcap_file << "\n";
+        }
     } else {
         std::cout << "[3/3] Ingesting " << simulated_packets << " Live NASDAQ ITCH 5.0 Packets...\n";
         
@@ -81,7 +88,7 @@ int main(int argc, char** argv) {
             msg.price = (std::endian::native == std::endian::little) ? __builtin_bswap32(price) : price;
             std::memcpy(msg.stock, "AAPL    ", 8);
 
-            engine.inject_network_packet(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+            engine->inject_network_packet(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
 
             if ((i & 0x7FFF) == 0) {
                 std::this_thread::sleep_for(std::chrono::microseconds(100));
@@ -96,8 +103,8 @@ int main(int argc, char** argv) {
     const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_wall - start_wall).count();
 
     std::cout << "\nProduction Execution Completed in " << elapsed_ms << " ms.\n";
-    engine.print_status_dashboard();
-    engine.stop();
+    engine->print_status_dashboard();
+    engine->stop();
 
     std::cout << "Engine cleanly halted. Telemetry unlinked.\n";
     return 0;

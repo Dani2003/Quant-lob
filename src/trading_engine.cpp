@@ -55,13 +55,42 @@ void PipelinedTradingEngine::stop() {
 }
 
 bool PipelinedTradingEngine::inject_network_packet(const uint8_t* buffer, size_t length, uint64_t timestamp_ns) {
+    (void)timestamp_ns;
     if (__builtin_expect(!running_.load(std::memory_order_relaxed), 0)) return false;
 
-    // Fast path: if this is a MoldUDP64 packet, parse datagram directly
-    size_t parsed = mold_parser_->process_datagram(buffer, length, timestamp_ns);
-    if (parsed > 0) {
-        messages_ingested_.fetch_add(parsed, std::memory_order_relaxed);
-        return true;
+    // Check if this is a MoldUDP64 packet
+    if (length >= sizeof(MoldUdp64Header)) {
+        const auto* header = reinterpret_cast<const MoldUdp64Header*>(buffer);
+        uint16_t count = (std::endian::native == std::endian::little) ? 
+                         __builtin_bswap16(header->message_count) : header->message_count;
+        if (count > 0 && count != 0xFFFF) {
+            size_t offset = sizeof(MoldUdp64Header);
+            size_t parsed = 0;
+            for (uint16_t i = 0; i < count && offset + 2 <= length; ++i) {
+                uint16_t raw_msg_len = *reinterpret_cast<const uint16_t*>(buffer + offset);
+                uint16_t msg_len = (std::endian::native == std::endian::little) ? 
+                                   __builtin_bswap16(raw_msg_len) : raw_msg_len;
+                offset += 2;
+                if (offset + msg_len > length) break;
+
+                const uint8_t* msg_ptr = buffer + offset;
+                if (msg_len >= sizeof(itch::AddOrderMsg) - 2 && msg_ptr[0] == 'A') {
+                    itch::AddOrderMsg msg{};
+                    msg.length = raw_msg_len;
+                    std::memcpy(&msg.message_type, msg_ptr, sizeof(itch::AddOrderMsg) - 2);
+                    while (!ingress_to_match_ring_.try_push(msg)) {
+                        if (!running_.load(std::memory_order_relaxed)) return false;
+                        CPU_PAUSE();
+                    }
+                    parsed++;
+                }
+                offset += msg_len;
+            }
+            if (parsed > 0) {
+                messages_ingested_.fetch_add(parsed, std::memory_order_relaxed);
+                return true;
+            }
+        }
     }
 
     // Direct ITCH message ingress
@@ -145,6 +174,13 @@ void PipelinedTradingEngine::strategy_thread_loop() {
 
             StrategyOrderIntent intent{};
             intent.timestamp_ns = TscClock::rdtsc();
+            intent.best_bid = best_bid;
+            intent.best_ask = best_ask;
+            intent.best_bid_vol = bid_vol;
+            intent.best_ask_vol = ask_vol;
+            intent.mid_price = mid_price;
+            intent.micro_price = micro_price;
+            intent.obi = obi_l1;
 
             if (obi_l1 > config_.obi_threshold && reservation_price > mid_price) {
                 if (obi_l1 > 0.60f) {
@@ -198,7 +234,7 @@ void PipelinedTradingEngine::execution_thread_loop() {
         if (alpha_to_exec_ring_.try_pop(intent)) {
             uint64_t t0 = TscClock::rdtsc();
 
-            auto mid = book_->get_mid_price();
+            double mid = intent.mid_price;
             uint32_t mid_ticks = static_cast<uint32_t>(mid);
 
             // Record market tick for TCA
@@ -255,14 +291,14 @@ void PipelinedTradingEngine::execution_thread_loop() {
                 shm->sequence++;
                 shm->heartbeat_timestamp_ns = t1;
 
-                auto best_bid = book_->get_best_bid();
-                auto best_ask = book_->get_best_ask();
-                shm->best_bid_price = best_bid ? best_bid->price : 0;
-                shm->best_bid_volume = best_bid ? best_bid->total_volume : 0;
-                shm->best_ask_price = best_ask ? best_ask->price : 0;
-                shm->best_ask_volume = best_ask ? best_ask->total_volume : 0;
-                shm->spread_ticks = (best_bid && best_ask && best_ask->price > best_bid->price) ? (best_ask->price - best_bid->price) : 0;
+                shm->best_bid_price = intent.best_bid;
+                shm->best_bid_volume = intent.best_bid_vol;
+                shm->best_ask_price = intent.best_ask;
+                shm->best_ask_volume = intent.best_ask_vol;
+                shm->spread_ticks = (intent.best_ask > intent.best_bid) ? (intent.best_ask - intent.best_bid) : 0;
                 shm->mid_price = mid;
+                shm->micro_price = intent.micro_price;
+                shm->weighted_obi = intent.obi;
 
                 shm->messages_ingested = messages_ingested_.load(std::memory_order_relaxed);
                 shm->orders_matched = orders_matched_.load(std::memory_order_relaxed);

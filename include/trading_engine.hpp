@@ -40,6 +40,15 @@ struct alignas(64) StrategyOrderIntent {
     uint32_t ask_price{0};
     uint32_t qty{0};
     uint64_t timestamp_ns{0};
+
+    // Market context snapshot forwarded along pipeline
+    uint32_t best_bid{0};
+    uint32_t best_ask{0};
+    uint32_t best_bid_vol{0};
+    uint32_t best_ask_vol{0};
+    double   mid_price{0.0};
+    double   micro_price{0.0};
+    float    obi{0.0f};
 };
 
 /// Production Configuration for Pipelined Trading Engine
@@ -78,6 +87,11 @@ public:
 
     /// Feed a raw network packet into the ingress pipeline
     bool inject_network_packet(const uint8_t* buffer, size_t length, uint64_t timestamp_ns = 0);
+
+    /// Replay adapter for PcapReader
+    size_t process_datagram(const uint8_t* buffer, size_t length, uint64_t timestamp_ns = 0) {
+        return inject_network_packet(buffer, length, timestamp_ns) ? 1 : 0;
+    }
 
     [[nodiscard]] bool is_running() const noexcept { return running_.load(std::memory_order_relaxed); }
     [[nodiscard]] const ShmTelemetryBlock* get_telemetry() const noexcept { return telemetry_mgr_.get(); }
