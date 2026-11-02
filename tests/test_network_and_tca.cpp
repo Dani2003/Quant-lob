@@ -61,8 +61,8 @@ void test_mold_udp64_parser() {
     assert(parser.total_gaps() == 0);
 
     // Check book state
-    assert(book.best_bid() != nullptr && book.best_bid()->price == 10000);
-    assert(book.best_ask() != nullptr && book.best_ask()->price == 10010);
+    assert(book.get_best_bid().has_value() && book.get_best_bid()->price == 10000);
+    assert(book.get_best_ask().has_value() && book.get_best_ask()->price == 10010);
 
     // 2. Test Gap Detection: Inject packet starting at sequence 6 (gap: expected 3, got 6 -> missing 3, 4, 5)
     header->sequence_number = to_big_endian64(6);
@@ -77,6 +77,7 @@ void test_mold_udp64_parser() {
     assert(gap->expected_seq == 3);
     assert(gap->received_seq == 6);
     assert(gap->missing_count == 3);
+    (void)gap;
 
     // 3. Test Gap Request Serialization
     uint8_t req_buf[64];
@@ -85,6 +86,8 @@ void test_mold_udp64_parser() {
     auto* req = reinterpret_cast<const MoldUdp64Request*>(req_buf);
     assert(from_big_endian64(req->sequence_number) == 3);
     assert(from_big_endian16(req->message_count) == 3);
+    (void)req_bytes;
+    (void)req;
 
     // 4. Test Duplicate Packet Rejection
     header->sequence_number = to_big_endian64(2); // Already passed sequence 7
@@ -92,6 +95,8 @@ void test_mold_udp64_parser() {
     msgs = parser.process_datagram(buffer, sizeof(MoldUdp64Header) + 2 + msg1_len, 3000);
     assert(msgs == 0);
     assert(parser.total_duplicates() == 1);
+    (void)msgs;
+
 
     std::cout << "  -> MoldUDP64 Multicast & Gap Detection Invariants PASSED.\n";
 }
@@ -126,8 +131,10 @@ void test_tca_engine() {
     // Adverse selection = -1 * (10008 - 10000) = +8 cents (adverse drift)
     assert(t1->adverse_selection_1ms == 8.0);
     assert(t1->is_toxic == true);
+    (void)t1;
 
     assert(tca.total_trades() == 1);
+
     assert(tca.toxic_flow_ratio() == 1.0);
 
     std::cout << "  -> TCA & Adverse Selection Invariants PASSED.\n";

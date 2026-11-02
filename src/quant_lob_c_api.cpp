@@ -64,15 +64,15 @@ int lob_get_bbo(
 {
     if (!handle) return 0;
     auto* book = static_cast<OrderBook*>(handle);
-    const auto* bid = book->best_bid();
-    const auto* ask = book->best_ask();
+    const auto bid = book->get_best_bid();
+    const auto ask = book->get_best_ask();
 
     if (best_bid_price) *best_bid_price = bid ? bid->price : 0;
     if (best_bid_vol)   *best_bid_vol   = bid ? bid->total_volume : 0;
     if (best_ask_price) *best_ask_price = ask ? ask->price : 0;
     if (best_ask_vol)   *best_ask_vol   = ask ? ask->total_volume : 0;
 
-    return (bid || ask) ? 1 : 0;
+    return (bid.has_value() || ask.has_value()) ? 1 : 0;
 }
 
 int lob_get_mid_and_spread(
@@ -82,8 +82,8 @@ int lob_get_mid_and_spread(
 {
     if (!handle) return 0;
     auto* book = static_cast<OrderBook*>(handle);
-    const auto* bid = book->best_bid();
-    const auto* ask = book->best_ask();
+    const auto bid = book->get_best_bid();
+    const auto ask = book->get_best_ask();
 
     if (bid && ask && ask->price > bid->price) {
         if (mid_price) *mid_price = (static_cast<double>(bid->price) + static_cast<double>(ask->price)) / 2.0;
@@ -106,20 +106,21 @@ int lob_get_top5(
 {
     if (!handle) return 0;
     auto* book = static_cast<OrderBook*>(handle);
-    MarketDepth5 depth{};
-    book->get_market_depth(depth);
+    Top5BookView view{};
+    book->get_top5_view(view);
 
-    if (bid_depth) *bid_depth = static_cast<uint32_t>(depth.bid_depth);
-    if (ask_depth) *ask_depth = static_cast<uint32_t>(depth.ask_depth);
+    if (bid_depth) *bid_depth = view.bid_depth;
+    if (ask_depth) *ask_depth = view.ask_depth;
 
     for (size_t i = 0; i < 5; ++i) {
-        if (bid_prices) bid_prices[i] = (i < depth.bid_depth) ? depth.bids[i].price : 0;
-        if (bid_vols)   bid_vols[i]   = (i < depth.bid_depth) ? depth.bids[i].total_volume : 0;
-        if (ask_prices) ask_prices[i] = (i < depth.ask_depth) ? depth.asks[i].price : 0;
-        if (ask_vols)   ask_vols[i]   = (i < depth.ask_depth) ? depth.asks[i].total_volume : 0;
+        if (bid_prices) bid_prices[i] = view.bid_prices[i];
+        if (bid_vols)   bid_vols[i]   = view.bid_volumes[i];
+        if (ask_prices) ask_prices[i] = view.ask_prices[i];
+        if (ask_vols)   ask_vols[i]   = view.ask_volumes[i];
     }
     return 1;
 }
+
 
 void lob_calculate_obi(
     const uint32_t* bid_vols,

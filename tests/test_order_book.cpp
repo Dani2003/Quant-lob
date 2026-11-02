@@ -12,9 +12,9 @@ void test_price_time_priority() {
 
     // Add two limit sell orders at the same price: 100.50 (10050 ticks)
     // Order 1 arrives first (Maker 1)
-    book->add_limit_order(1, 10, Side::Sell, 10050, 100);
+    (void)book->add_limit_order(1, 10, Side::Sell, 10050, 100);
     // Order 2 arrives second (Maker 2)
-    book->add_limit_order(2, 20, Side::Sell, 10050, 200);
+    (void)book->add_limit_order(2, 20, Side::Sell, 10050, 200);
 
     uint64_t first_maker_filled = 0;
     book->set_trade_callback([](const Trade& trade, void* user_data) {
@@ -26,7 +26,7 @@ void test_price_time_priority() {
 
     // Aggressive Buy Order arrives for 50 shares
     // Must fill against Order 1 first (FIFO)
-    book->add_limit_order(3, 30, Side::Buy, 10050, 50);
+    (void)book->add_limit_order(3, 30, Side::Buy, 10050, 50);
 
     assert(first_maker_filled == 1 && "FIFO violated! Order 1 must be filled first.");
     assert(book->get_resting_order_count() == 2 && "Both orders should remain (Order 1 partially filled).");
@@ -39,12 +39,12 @@ void test_partial_fill_and_queue_position() {
     auto book = std::make_unique<OrderBook>();
 
     // Order 1: 100 shares @ $100.00
-    book->add_limit_order(1, 10, Side::Sell, 10000, 100);
+    (void)book->add_limit_order(1, 10, Side::Sell, 10000, 100);
     // Order 2: 100 shares @ $100.00
-    book->add_limit_order(2, 20, Side::Sell, 10000, 100);
+    (void)book->add_limit_order(2, 20, Side::Sell, 10000, 100);
 
     // Cross with 40 shares Buy
-    book->add_market_order(3, 30, Side::Buy, 40);
+    (void)book->add_market_order(3, 30, Side::Buy, 40);
 
     auto best_ask = book->get_best_ask();
     assert(best_ask.has_value());
@@ -52,7 +52,7 @@ void test_partial_fill_and_queue_position() {
     assert(best_ask->order_count == 2 && "Both orders should still exist.");
 
     // Next cross with 60 shares Buy should completely exhaust Order 1, without touching Order 2
-    book->add_market_order(4, 30, Side::Buy, 60);
+    (void)book->add_market_order(4, 30, Side::Buy, 60);
 
     best_ask = book->get_best_ask();
     assert(best_ask.has_value());
@@ -67,15 +67,15 @@ void test_multi_level_market_sweep() {
     auto book = std::make_unique<OrderBook>();
 
     // Build Ask ladder
-    book->add_limit_order(1, 10, Side::Sell, 10001, 50);  // Level 1
-    book->add_limit_order(2, 20, Side::Sell, 10002, 100); // Level 2
-    book->add_limit_order(3, 30, Side::Sell, 10003, 150); // Level 3
+    (void)book->add_limit_order(1, 10, Side::Sell, 10001, 50);  // Level 1
+    (void)book->add_limit_order(2, 20, Side::Sell, 10002, 100); // Level 2
+    (void)book->add_limit_order(3, 30, Side::Sell, 10003, 150); // Level 3
 
     assert(book->get_best_ask()->price == 10001);
 
     // Aggressive market order sweeps 200 shares
     // Should consume Level 1 (50 shares), Level 2 (100 shares), and 50 shares of Level 3
-    book->add_market_order(4, 40, Side::Buy, 200);
+    (void)book->add_market_order(4, 40, Side::Buy, 200);
 
     assert(book->get_best_ask()->price == 10003 && "Top of book should advance to Level 3.");
     assert(book->get_best_ask()->total_volume == 100 && "Level 3 should have 100 shares remaining.");
@@ -88,19 +88,22 @@ void test_cancellation_invariance() {
     std::cout << "[Test 4] Verifying O(1) Cancellation Invariants... ";
     auto book = std::make_unique<OrderBook>();
 
-    book->add_limit_order(100, 1, Side::Buy, 9990, 50);
-    book->add_limit_order(101, 1, Side::Buy, 9995, 100); // Best bid
+    (void)book->add_limit_order(100, 1, Side::Buy, 9990, 50);
+    (void)book->add_limit_order(101, 1, Side::Buy, 9995, 100); // Best bid
 
     assert(book->get_best_bid()->price == 9995);
 
     // Cancel best bid
     bool ok = book->cancel_order(101);
     assert(ok && "Cancel must succeed for active order.");
+    (void)ok;
     assert(book->get_best_bid()->price == 9990 && "Best bid must instantly fall back to 9990.");
 
     // Attempt double cancel
     bool double_cancel = book->cancel_order(101);
     assert(!double_cancel && "Double cancel must return false safely.");
+    (void)double_cancel;
+
 
     std::cout << "PASSED [OK]\n";
 }

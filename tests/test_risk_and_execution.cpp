@@ -56,8 +56,10 @@ void test_risk_engine_limits() {
     assert(res == RiskCheckResult::KillSwitchActive);
     risk.reset_kill_switch();
     assert(!risk.is_kill_switch_active());
+    (void)res;
 
     std::cout << "  -> Risk Engine Guardrail Checks PASSED.\n";
+
 }
 
 void test_pnl_and_inventory_accounting() {
@@ -122,8 +124,12 @@ void test_ouch_wire_serialization() {
     assert(cancel_msg->type == 'X');
     assert(from_big_endian64(cancel_msg->order_token) == order_token);
     assert(from_big_endian32(cancel_msg->shares) == shares);
+    (void)bytes;
+    (void)msg;
+    (void)cancel_msg;
 
     std::cout << "  -> NASDAQ OUCH 5.0 Serialization Invariants PASSED.\n";
+
 }
 
 void test_order_state_machine() {
@@ -182,8 +188,11 @@ void test_order_state_machine() {
     ord = oms.submit_order(token3, 0, 160'00, 100, 100'00, t, risk);
     assert(ord->status == OrderStatus::RiskRejected);
     assert(ord->risk_result == RiskCheckResult::PriceCollarBreached);
+    (void)ord;
+    (void)ok;
 
     std::cout << "  -> Order State Machine Lifecycle Invariants PASSED.\n";
+
 }
 
 int main() {
