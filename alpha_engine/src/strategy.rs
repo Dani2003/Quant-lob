@@ -146,3 +146,4 @@ impl HftAlphaStrategy {
         }
     }
 }
+
