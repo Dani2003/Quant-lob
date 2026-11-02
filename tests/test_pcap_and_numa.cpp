@@ -36,6 +36,7 @@ void test_pcap_replay_engine() {
     // 1. Generate synthetic PCAP capture file
     bool gen_ok = PcapReader::generate_synthetic_itch_pcap(pcap_file, PACKET_COUNT);
     assert(gen_ok && "Failed to generate synthetic PCAP file");
+    (void)gen_ok;
 
     // 2. Setup OrderBook & MoldUDP64 Parser
     OrderBook book;
@@ -46,6 +47,8 @@ void test_pcap_replay_engine() {
     PcapReader reader;
     bool open_ok = reader.open(pcap_file);
     assert(open_ok && "Failed to open PCAP file");
+    (void)open_ok;
+
 
     size_t replayed = reader.replay(parser);
     reader.close();
@@ -98,11 +101,14 @@ void test_kernel_bypass_xdp() {
     // 1. Simulate NIC DMA directly into UMEM chunk
     bool dma_ok = xdp.inject_packet_dma(raw_frame, 42 + sizeof(MoldUdp64Header));
     assert(dma_ok && "NIC DMA packet injection failed");
+    (void)dma_ok;
 
     // 2. Poll RX ring zero-copy
     size_t processed = xdp.poll_and_dispatch(parser, 32);
     assert(processed == 1 && "AF_XDP polling failed to consume packet");
     assert(xdp.total_packets() == 1);
+    (void)processed;
+
 
     std::cout << "  -> AF_XDP Kernel Bypass Zero-Copy Ingress PASSED.\n";
 }
