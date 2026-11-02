@@ -49,20 +49,25 @@ fn main() {
     }
     println!();
 
-    // 4. Compute SIMD Order Book Imbalance (OBI)
-    let obi_result = engine.compute_simd_obi();
+    // 4. Compute Quantitative Alpha Signals (SIMD OBI + Stoikov Micro-Price)
+    let signal = engine.compute_alpha_signals();
+    println!("--- Quantitative Alpha Signals ---");
+    println!("  Standard Mid-Price : ${:.2}", signal.mid_price / 100.0);
+    println!("  Stoikov Micro-Price: ${:.4} (Adjusted for queue size)", signal.micro_price / 100.0);
+    println!("  Spread             : {} ticks (${:.2})\n", signal.spread_ticks, signal.spread_ticks as f64 / 100.0);
+
     println!("--- SIMD-Vectorized Order Book Imbalance (OBI) ---");
     println!("Formula: OBI = (BidVolume - AskVolume) / (BidVolume + AskVolume)");
     for i in 0..4 {
         println!(
             "  Level {}: OBI = {:+0.4} (Bid: {}, Ask: {})",
             i + 1,
-            obi_result.levels[i],
+            signal.obi.levels[i],
             snapshot.bid_volumes[i],
             snapshot.ask_volumes[i]
         );
     }
-    println!("  Weighted Multi-Level OBI: {:+0.4}\n", obi_result.weighted_obi);
+    println!("  Weighted Multi-Level OBI: {:+0.4}\n", signal.obi.weighted_obi);
 
     // 5. Benchmark SIMD vs Scalar OBI Throughput
     println!("[3/4] Benchmarking 10,000,000 OBI Calculations (SIMD vs Scalar)...");

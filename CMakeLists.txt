@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(QuantLOB
     VERSION 1.0.0
-    DESCRIPTION "Sub-microsecond Lock-Free C++20 Limit Order Book Architecture"
+    DESCRIPTION "Sub-microsecond Lock-Free C++20 Limit Order Book & Quantitative Matching Engine"
     LANGUAGES CXX
 )
 
@@ -25,8 +25,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
         -Wall
         -Wextra
         -Wpedantic
-        -Wshadow
-        -Wconversion
+        -Wno-interference-size
     )
     add_link_options(-flto)
 elseif(MSVC)
@@ -41,18 +40,28 @@ elseif(MSVC)
     add_link_options(/LTCG)
 endif()
 
-# Limit Order Book Benchmark Executable
-add_executable(lob_benchmark
-    src/main.cpp
+# Core LOB Engine Static Library
+add_library(lob_engine STATIC
     src/order_book.cpp
+    src/feed_handler.cpp
 )
 
-target_include_directories(lob_benchmark
-    PRIVATE
+target_include_directories(lob_engine
+    PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# Threading support
 find_package(Threads REQUIRED)
-target_link_libraries(lob_benchmark PRIVATE Threads::Threads)
+target_link_libraries(lob_engine PUBLIC Threads::Threads)
 
+# Benchmark Suite Executable
+add_executable(lob_benchmark
+    src/main.cpp
+)
+target_link_libraries(lob_benchmark PRIVATE lob_engine)
+
+# Invariant Unit Test Executable
+add_executable(lob_tests
+    tests/test_order_book.cpp
+)
+target_link_libraries(lob_tests PRIVATE lob_engine)

@@ -1,6 +1,6 @@
 pub mod simd_obi;
 
-pub use simd_obi::{calculate_obi, Level4Obi};
+pub use simd_obi::{calculate_micro_price, calculate_obi, Level4Obi, QuantAlphaSignal};
 
 // Explicitly bind the static C++ bridge library compiled by build.rs
 #[link(name = "quant_lob_bridge", kind = "static")]
@@ -134,6 +134,26 @@ impl AlphaEngine {
     pub fn compute_simd_obi(&self) -> Level4Obi {
         let snapshot = self.get_top5_snapshot();
         calculate_obi(&snapshot.bid_volumes, &snapshot.ask_volumes)
+    }
+
+    /// Computes full quantitative alpha vector: OBI, Stoikov Micro-Price, and Spread.
+    #[inline(always)]
+    pub fn compute_alpha_signals(&self) -> QuantAlphaSignal {
+        let snapshot = self.get_top5_snapshot();
+        let obi = calculate_obi(&snapshot.bid_volumes, &snapshot.ask_volumes);
+
+        let best_bid = snapshot.bid_prices[0];
+        let best_ask = snapshot.ask_prices[0];
+        let mid_price = (best_bid as f64 + best_ask as f64) / 2.0;
+        let micro_price = calculate_micro_price(best_bid, snapshot.bid_volumes[0], best_ask, snapshot.ask_volumes[0]);
+        let spread_ticks = if best_ask > best_bid { best_ask - best_bid } else { 0 };
+
+        QuantAlphaSignal {
+            obi,
+            micro_price,
+            mid_price,
+            spread_ticks,
+        }
     }
 }
 

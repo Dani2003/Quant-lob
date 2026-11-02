@@ -14,9 +14,12 @@
 #define CPU_PAUSE() std::this_thread::yield()
 #endif
 
+#include "cpu_affinity.hpp"
+#include "feed_handler.hpp"
 #include "memory_pool.hpp"
 #include "order_book.hpp"
 #include "ring_buffer.hpp"
+#include "tsc_clock.hpp"
 
 using namespace lob;
 
@@ -26,7 +29,6 @@ constexpr size_t MEMORY_POOL_CAPACITY = 65536;
 
 /**
  * @brief Benchmark 1: Pipelined Single-Threaded Push & Pop Loop through RingBuffer.
- * Measures raw per-operation queue latency and zero-allocation efficiency.
  */
 void run_sequential_ring_buffer_benchmark() {
     std::cout << "==========================================================\n";
@@ -69,8 +71,7 @@ void run_sequential_ring_buffer_benchmark() {
 }
 
 /**
- * @brief Benchmark 2: Concurrent Multi-Threaded SPSC Benchmark.
- * Producer thread pushes 1M orders, Consumer thread pops concurrently across distinct cores.
+ * @brief Benchmark 2: Concurrent Multi-Threaded SPSC Benchmark with CPU Affinity.
  */
 void run_concurrent_spsc_benchmark() {
     std::cout << "==========================================================\n";
@@ -83,8 +84,10 @@ void run_concurrent_spsc_benchmark() {
     uint64_t popped_checksum = 0;
     size_t popped_count = 0;
 
-    // Consumer Thread
+    // Consumer Thread pinned to Core 1
     std::thread consumer([&]() {
+        CpuAffinity::pin_current_thread(1);
+
         while (!start_signal.load(std::memory_order_acquire)) {
             CPU_PAUSE();
         }
@@ -100,7 +103,9 @@ void run_concurrent_spsc_benchmark() {
         }
     });
 
-    // Producer Thread
+    // Producer Thread pinned to Core 0
+    CpuAffinity::pin_current_thread(0);
+
     const auto start_time = std::chrono::high_resolution_clock::now();
     start_signal.store(true, std::memory_order_release);
 
@@ -171,9 +176,6 @@ void run_memory_pool_benchmark() {
     std::cout << "Pool Availability  : " << pool.available() << " / " << pool.capacity() << " slots available\n\n";
 }
 
-/**
- * @brief Command representation for simulated continuous order book stream.
- */
 struct OrderCommand {
     enum class Action : uint8_t {
         AddLimit,
@@ -189,15 +191,11 @@ struct OrderCommand {
 };
 
 /**
- * @brief Benchmark 4: Core Limit Order Book (LOB) Matching Stream.
- * Simulates a continuous realistic order book feed:
- * - 60% Passive Limit orders (liquidity providing / resting)
- * - 25% Aggressive crossing Limit & Market orders (immediate matches/executions)
- * - 15% Cancellations (order lifecycle churn)
+ * @brief Benchmark 4: Core Limit Order Book (LOB) Matching Stream with Hardware TSC Profiler.
  */
 void run_lob_matching_benchmark() {
     std::cout << "==========================================================\n";
-    std::cout << "[Benchmark 4] Core Limit Order Book (LOB) Matching Stream\n";
+    std::cout << "[Benchmark 4] Core LOB Matching Stream + Hardware TSC Profiler\n";
     std::cout << "==========================================================\n";
 
     constexpr size_t STREAM_SIZE = 1'000'000;
@@ -207,7 +205,6 @@ void run_lob_matching_benchmark() {
     std::vector<OrderCommand> stream;
     stream.reserve(STREAM_SIZE);
 
-    // Fast XorShift64 PRNG to generate deterministically reproducible realistic flow
     uint64_t rng_state = 0x853c49e6748fea9bULL;
     auto xorshift64 = [&rng_state]() -> uint64_t {
         uint64_t x = rng_state;
@@ -227,17 +224,15 @@ void run_lob_matching_benchmark() {
         uint32_t prob = static_cast<uint32_t>(rand_val % 100);
 
         if (prob < 60) {
-            // 60%: Passive Limit Order (adding liquidity near top of book)
             Side side = ((rand_val >> 8) & 1) ? Side::Buy : Side::Sell;
-            uint32_t spread_offset = 1 + static_cast<uint32_t>((rand_val >> 16) % 20); // 1 to 20 ticks
+            uint32_t spread_offset = 1 + static_cast<uint32_t>((rand_val >> 16) % 20);
             uint32_t price = (side == Side::Buy) ? (BASE_MID_PRICE - spread_offset) : (BASE_MID_PRICE + spread_offset);
-            uint32_t qty = 10 + static_cast<uint32_t>((rand_val >> 24) % 90);          // 10 to 100 shares
+            uint32_t qty = 10 + static_cast<uint32_t>((rand_val >> 24) % 90);
 
             uint64_t oid = next_order_id++;
             stream.push_back(OrderCommand{OrderCommand::Action::AddLimit, side, price, qty, oid});
             active_order_ids.push_back(oid);
         } else if (prob < 85) {
-            // 25%: Aggressive Crossing Order (Limit or Market order triggering execution)
             Side side = ((rand_val >> 8) & 1) ? Side::Buy : Side::Sell;
             bool is_market = ((rand_val >> 9) & 1);
             uint32_t qty = 5 + static_cast<uint32_t>((rand_val >> 16) % 50);
@@ -245,24 +240,20 @@ void run_lob_matching_benchmark() {
             if (is_market) {
                 stream.push_back(OrderCommand{OrderCommand::Action::AddMarket, side, 0, qty, next_order_id++});
             } else {
-                // Aggressive crossing limit price: Buy crosses ask, Sell crosses bid
                 uint32_t cross_offset = static_cast<uint32_t>((rand_val >> 24) % 5);
                 uint32_t price = (side == Side::Buy) ? (BASE_MID_PRICE + cross_offset) : (BASE_MID_PRICE - cross_offset);
                 stream.push_back(OrderCommand{OrderCommand::Action::AddLimit, side, price, qty, next_order_id++});
             }
         } else {
-            // 15%: Order Cancellation
             if (!active_order_ids.empty()) {
                 size_t cancel_idx = (rand_val >> 16) % active_order_ids.size();
                 uint64_t cancel_id = active_order_ids[cancel_idx];
 
-                // Fast swap-and-pop removal from active pool
                 active_order_ids[cancel_idx] = active_order_ids.back();
                 active_order_ids.pop_back();
 
                 stream.push_back(OrderCommand{OrderCommand::Action::Cancel, Side::Buy, 0, 0, cancel_id});
             } else {
-                // Fallback to passive limit order if no active orders to cancel
                 uint64_t oid = next_order_id++;
                 stream.push_back(OrderCommand{OrderCommand::Action::AddLimit, Side::Buy, BASE_MID_PRICE - 5, 25, oid});
                 active_order_ids.push_back(oid);
@@ -272,19 +263,20 @@ void run_lob_matching_benchmark() {
 
     std::cout << "Simulated stream ready. Executing matching engine loop...\n\n";
 
-    // Allocate OrderBook (Zero allocations occur after initialization)
     auto book = std::make_unique<OrderBook>();
+    LatencyProfiler<1'000'000> profiler;
 
-    // Warm-up cache lines with a small initial book
+    // Warm-up initial book
     for (uint32_t p = 1; p <= 10; ++p) {
         book->add_limit_order(next_order_id++, 100, Side::Buy, BASE_MID_PRICE - p, 100);
         book->add_limit_order(next_order_id++, 100, Side::Sell, BASE_MID_PRICE + p, 100);
     }
 
-    // Benchmark Hot Loop
     const auto start_time = std::chrono::high_resolution_clock::now();
 
     for (const auto& cmd : stream) {
+        const uint64_t t0 = TscClock::rdtsc();
+
         switch (cmd.action) {
             case OrderCommand::Action::AddLimit:
                 book->add_limit_order(cmd.order_id, 1, cmd.side, cmd.price, cmd.quantity);
@@ -296,6 +288,9 @@ void run_lob_matching_benchmark() {
                 book->cancel_order(cmd.order_id);
                 break;
         }
+
+        const uint64_t t1 = TscClock::rdtsc();
+        profiler.record_cycles(t0, t1);
     }
 
     const auto end_time = std::chrono::high_resolution_clock::now();
@@ -303,7 +298,6 @@ void run_lob_matching_benchmark() {
     const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
     const double elapsed_ms = static_cast<double>(elapsed_ns) / 1'000'000.0;
     const double ops_per_sec = (static_cast<double>(STREAM_SIZE) / static_cast<double>(elapsed_ns)) * 1e9;
-    const double avg_latency_ns = static_cast<double>(elapsed_ns) / static_cast<double>(STREAM_SIZE);
 
     const uint64_t total_trades = book->get_total_trades_count();
     const uint64_t matched_volume = book->get_total_matched_volume();
@@ -314,12 +308,14 @@ void run_lob_matching_benchmark() {
               << (elapsed_ns / 1'000) << " us)\n";
     std::cout << "Order Ops Throughput   : " << std::fixed << std::setprecision(2) << (ops_per_sec / 1e6) 
               << " Million ops/sec\n";
-    std::cout << "Average Latency / Op   : " << std::fixed << std::setprecision(2) << avg_latency_ns << " ns / operation\n";
     std::cout << "Trades Executed        : " << total_trades << " trades\n";
     std::cout << "Matched Share Volume   : " << matched_volume << " units\n";
     std::cout << "Execution Throughput   : " << std::fixed << std::setprecision(2) << (trades_per_sec / 1e6) 
               << " Million trades/sec\n";
     std::cout << "Resting Orders in Book : " << book->get_resting_order_count() << "\n\n";
+
+    // Print Hardware RDTSC Tail Latency Distribution
+    profiler.print_report("Matching Engine Hot Path");
 
     // Top of Book & Level 2 Depth Inspection
     std::cout << "--- Level 2 Market Depth Snapshot (Post-Benchmark) ---\n";
@@ -359,19 +355,73 @@ void run_lob_matching_benchmark() {
         }
         std::cout << "\n";
     }
+    std::cout << "==========================================================\n\n";
+}
+
+/**
+ * @brief Benchmark 5: Binary ITCH 5.0 Network Wire Feed Ingestion.
+ */
+void run_itch_feed_benchmark() {
+    std::cout << "==========================================================\n";
+    std::cout << "[Benchmark 5] Binary NASDAQ ITCH 5.0 Feed Ingestion\n";
+    std::cout << "==========================================================\n";
+
+    auto book = std::make_unique<OrderBook>();
+    FeedHandler handler(*book);
+
+    constexpr size_t MSG_COUNT = 500'000;
+    std::vector<itch::AddOrderMsg> binary_stream(MSG_COUNT);
+
+    for (size_t i = 0; i < MSG_COUNT; ++i) {
+        binary_stream[i].length = itch::read_be16(&itch::AddOrderMsg{}.length); // 36 bytes payload
+        binary_stream[i].message_type = 'A';
+        binary_stream[i].stock_locate = 1;
+        binary_stream[i].order_ref_num = itch::read_be64(&i);
+        binary_stream[i].buy_sell_indicator = (i % 2 == 0) ? 'B' : 'S';
+        uint32_t shares = 100;
+        binary_stream[i].shares = itch::read_be32(&shares);
+        uint32_t price = static_cast<uint32_t>((10000 + (i % 50)) * 100);
+        binary_stream[i].price = itch::read_be32(&price);
+        std::memcpy(binary_stream[i].stock, "AAPL    ", 8);
+    }
+
+    const auto* raw_ptr = reinterpret_cast<const uint8_t*>(binary_stream.data());
+    const size_t total_bytes = MSG_COUNT * sizeof(itch::AddOrderMsg);
+
+    const auto start_time = std::chrono::high_resolution_clock::now();
+
+    size_t offset = 0;
+    while (offset < total_bytes) {
+        size_t consumed = handler.process_packet(raw_ptr + offset, total_bytes - offset);
+        if (consumed == 0) break;
+        offset += consumed;
+    }
+
+    const auto end_time = std::chrono::high_resolution_clock::now();
+    const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
+    const double elapsed_ms = static_cast<double>(elapsed_ns) / 1'000'000.0;
+    const double msgs_per_sec = (static_cast<double>(handler.messages_processed()) / static_cast<double>(elapsed_ns)) * 1e9;
+    const double throughput_mb_s = (static_cast<double>(handler.bytes_processed()) / (1024.0 * 1024.0)) / (static_cast<double>(elapsed_ns) / 1e9);
+
+    std::cout << "Binary Messages Ingested: " << handler.messages_processed() << "\n";
+    std::cout << "Total Bytes Parsed      : " << (handler.bytes_processed() / (1024 * 1024)) << " MB\n";
+    std::cout << "Ingestion Time          : " << std::fixed << std::setprecision(3) << elapsed_ms << " ms\n";
+    std::cout << "Feed Ingestion Rate     : " << std::fixed << std::setprecision(2) << (msgs_per_sec / 1e6) << " Million msgs/sec\n";
+    std::cout << "Network Bandwidth Rate  : " << std::fixed << std::setprecision(2) << throughput_mb_s << " MB/s\n";
     std::cout << "==========================================================\n";
 }
 
 int main() {
     std::cout << "==========================================================\n";
-    std::cout << "  QUANT-LOB: HIGH-FREQUENCY TRADING (HFT) BENCHMARK SUITE \n";
-    std::cout << "  Architecture: C++20 | Zero-Allocation | alignas(64) L1  \n";
+    std::cout << "  QUANT-LOB: PRODUCTION-GRADE HIGH-FREQUENCY TRADING LOB \n";
+    std::cout << "  Architecture: C++20 | Zero-Allocation | RDTSC Profiler \n";
     std::cout << "==========================================================\n\n";
 
     run_sequential_ring_buffer_benchmark();
     run_concurrent_spsc_benchmark();
     run_memory_pool_benchmark();
     run_lob_matching_benchmark();
+    run_itch_feed_benchmark();
 
     return 0;
 }
