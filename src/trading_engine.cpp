@@ -12,9 +12,13 @@
 
 namespace lob {
 
+PipelinedTradingEngine::PipelinedTradingEngine()
+    : PipelinedTradingEngine(EngineConfig{}) {}
+
 PipelinedTradingEngine::PipelinedTradingEngine(const EngineConfig& config)
     : config_(config),
       risk_engine_(config.risk_config) 
+
 {
     book_ = std::make_unique<OrderBook>();
     feed_handler_ = std::make_unique<FeedHandler>(*book_);

@@ -42,6 +42,20 @@ struct alignas(64) StrategyOrderIntent {
     uint64_t timestamp_ns{0};
 };
 
+/// Production Configuration for Pipelined Trading Engine
+struct EngineConfig {
+    int core_ingress{0};
+    int core_matching{1};
+    int core_strategy{2};
+    int core_execution{3};
+    RiskConfig risk_config{};
+    std::string symbol{"AAPL"};
+    uint32_t quote_lot_size{100};
+    float obi_threshold{0.25f};
+    double inventory_gamma{0.005};
+    bool enable_core_pinning{true};
+};
+
 /// High-Performance Pipelined 4-Core Autonomous Trading Engine
 /// Thread 1: Market Data Ingress (MoldUDP64/ITCH) -> Core Pinned
 /// Thread 2: Limit Order Book FIFO Matcher       -> Core Pinned
@@ -49,21 +63,12 @@ struct alignas(64) StrategyOrderIntent {
 /// Thread 4: Pre-Trade Risk, OMS & OUCH Wire    -> Core Pinned
 class PipelinedTradingEngine {
 public:
-    struct EngineConfig {
-        int core_ingress{0};
-        int core_matching{1};
-        int core_strategy{2};
-        int core_execution{3};
-        RiskConfig risk_config{};
-        std::string symbol{"AAPL"};
-        uint32_t quote_lot_size{100};
-        float obi_threshold{0.25f};
-        double inventory_gamma{0.005};
-        bool enable_core_pinning{true};
-    };
+    using EngineConfig = lob::EngineConfig;
 
-    explicit PipelinedTradingEngine(const EngineConfig& config = EngineConfig{});
+    PipelinedTradingEngine();
+    explicit PipelinedTradingEngine(const EngineConfig& config);
     ~PipelinedTradingEngine();
+
 
     /// Start the 4-core pipelined engine
     void start();

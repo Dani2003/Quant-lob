@@ -89,13 +89,14 @@ public:
             return true;
         }
         block_ = static_cast<ShmTelemetryBlock*>(ptr);
-        std::memset(block_, 0, sizeof(ShmTelemetryBlock));
+        *block_ = ShmTelemetryBlock{};
         return true;
 #else
         block_ = new ShmTelemetryBlock{};
-        std::memset(block_, 0, sizeof(ShmTelemetryBlock));
+        *block_ = ShmTelemetryBlock{};
         return true;
 #endif
+
     }
 
     /// Initialize as Consumer (External Monitor reads live state)
