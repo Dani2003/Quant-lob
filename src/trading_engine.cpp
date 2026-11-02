@@ -74,10 +74,21 @@ bool PipelinedTradingEngine::inject_network_packet(const uint8_t* buffer, size_t
                 if (offset + msg_len > length) break;
 
                 const uint8_t* msg_ptr = buffer + offset;
-                if (msg_len >= sizeof(itch::AddOrderMsg) - 2 && msg_ptr[0] == 'A') {
+                char mtype = 0;
+                if (msg_ptr[0] == 'A') {
+                    mtype = 'A';
+                } else if (msg_len >= 3 && msg_ptr[2] == 'A') {
+                    mtype = 'A';
+                }
+
+                if (mtype == 'A') {
                     itch::AddOrderMsg msg{};
-                    msg.length = raw_msg_len;
-                    std::memcpy(&msg.message_type, msg_ptr, sizeof(itch::AddOrderMsg) - 2);
+                    if (msg_ptr[0] == 'A') {
+                        msg.length = raw_msg_len;
+                        std::memcpy(&msg.message_type, msg_ptr, sizeof(itch::AddOrderMsg) - 2);
+                    } else {
+                        std::memcpy(&msg, msg_ptr, std::min(sizeof(itch::AddOrderMsg), static_cast<size_t>(msg_len)));
+                    }
                     while (!ingress_to_match_ring_.try_push(msg)) {
                         if (!running_.load(std::memory_order_relaxed)) return false;
                         CPU_PAUSE();
