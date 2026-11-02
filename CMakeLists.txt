@@ -72,3 +72,22 @@ add_executable(lob_risk_tests
 )
 target_link_libraries(lob_risk_tests PRIVATE lob_engine)
 
+# MoldUDP64 Multicast Protocol & TCA Invariant Tests
+add_executable(lob_network_tca_tests
+    tests/test_network_and_tca.cpp
+)
+target_link_libraries(lob_network_tca_tests PRIVATE lob_engine)
+
+# Shared C-ABI Library for Python Quant Research SDK
+add_library(quant_lob SHARED
+    src/order_book.cpp
+    src/feed_handler.cpp
+    src/quant_lob_c_api.cpp
+)
+target_include_directories(quant_lob
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(quant_lob PUBLIC Threads::Threads)
+
+
