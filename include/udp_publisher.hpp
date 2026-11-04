@@ -24,7 +24,7 @@ namespace lob {
 struct alignas(8) BinaryMarketDataPacket {
     uint64_t sequence{0};
     uint64_t timestamp_ns{0};
-    char     symbol[8]{"AAPL    "};
+    char     symbol[8]{'A', 'A', 'P', 'L', ' ', ' ', ' ', ' '};
     uint32_t bid_price{0};
     uint32_t bid_volume{0};
     uint32_t ask_price{0};
