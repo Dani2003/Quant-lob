@@ -19,6 +19,7 @@
 #include "tsc_clock.hpp"
 #include "cpu_affinity.hpp"
 #include "shm_telemetry.hpp"
+#include "udp_publisher.hpp"
 
 namespace lob {
 
@@ -63,6 +64,9 @@ struct EngineConfig {
     float obi_threshold{0.25f};
     double inventory_gamma{0.005};
     bool enable_core_pinning{true};
+    bool enable_udp_streaming{true};
+    std::string udp_host{"127.0.0.1"};
+    uint16_t udp_port{9876};
 };
 
 /// High-Performance Pipelined 4-Core Autonomous Trading Engine
@@ -122,6 +126,7 @@ private:
     TcaEngine<16384, 32768> tca_engine_;
     ShmTelemetryManager telemetry_mgr_;
     LatencyProfiler<100'000> exec_profiler_;
+    UdpMarketDataPublisher udp_pub_;
 
     // Pipelined Worker Threads
     std::thread matching_thread_;

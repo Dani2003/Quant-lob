@@ -26,6 +26,10 @@ PipelinedTradingEngine::PipelinedTradingEngine(const EngineConfig& config)
 
     telemetry_mgr_.init_producer();
 
+    if (config_.enable_udp_streaming) {
+        udp_pub_.init(config_.udp_host, config_.udp_port);
+    }
+
     // Attach trade callback to book
     book_->set_trade_callback([](const Trade& trade, void* user_data) {
         auto* self = static_cast<PipelinedTradingEngine*>(user_data);
@@ -322,6 +326,21 @@ void PipelinedTradingEngine::execution_thread_loop() {
                 shm->total_pnl_cents = risk_engine_.total_pnl();
                 shm->risk_rejections = risk_rejections_.load(std::memory_order_relaxed);
                 shm->kill_switch_active = risk_engine_.is_kill_switch_active();
+
+                if (config_.enable_udp_streaming) {
+                    BinaryMarketDataPacket pkt{};
+                    pkt.sequence = shm->sequence;
+                    pkt.timestamp_ns = t1;
+                    std::memcpy(pkt.symbol, config_.symbol.data(), std::min(sizeof(pkt.symbol), config_.symbol.size()));
+                    pkt.bid_price = intent.best_bid;
+                    pkt.bid_volume = intent.best_bid_vol;
+                    pkt.ask_price = intent.best_ask;
+                    pkt.ask_volume = intent.best_ask_vol;
+                    pkt.mid_price = mid;
+                    pkt.micro_price = intent.micro_price;
+                    pkt.obi = intent.obi;
+                    udp_pub_.publish_tick(pkt);
+                }
             }
         } else {
             CPU_PAUSE();

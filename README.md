@@ -227,8 +227,17 @@ cd ..
 # Run 50,000 tick backtest simulation with full TCA markouts
 python3 python/run_quant_backtest.py
 
-# Launch Real-Time ASCII Trading Desk Terminal Monitor
+# Launch Real-Time ASCII Trading Desk Terminal Monitor (via POSIX SHM)
 python3 python/monitor_dashboard.py
+```
+
+### 7. Asynchronous UDP Binary Market Data Stream to Client Applications
+```bash
+# Terminal 1: Launch the async UDP binary market data feed listener
+python3 python/udp_client_listener.py 9876
+
+# Terminal 2: Ingest packets and broadcast live depth & alpha ticks over UDP
+./build/lob_engine_service --symbol AAPL --packets 100000 --udp-port 9876
 ```
 
 ---

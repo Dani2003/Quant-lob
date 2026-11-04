@@ -46,6 +46,11 @@ int main(int argc, char** argv) {
             simulated_packets = std::stoull(argv[++i]);
         } else if (arg == "--no-pinning") {
             config.enable_core_pinning = false;
+        } else if (arg == "--udp-port" && i + 1 < argc) {
+            config.udp_port = static_cast<uint16_t>(std::stoul(argv[++i]));
+            config.enable_udp_streaming = true;
+        } else if (arg == "--no-udp") {
+            config.enable_udp_streaming = false;
         }
     }
 
@@ -55,6 +60,9 @@ int main(int argc, char** argv) {
               << "] | Matcher [Core " << config.core_matching
               << "] | Alpha [Core " << config.core_strategy
               << "] | Execution [Core " << config.core_execution << "]\n";
+    if (config.enable_udp_streaming) {
+        std::cout << "  UDP Broadcast: Streaming binary market feed to " << config.udp_host << ":" << config.udp_port << "\n";
+    }
 
     engine->start();
     std::cout << "[2/3] Trading Engine threads pinned and running.\n";
