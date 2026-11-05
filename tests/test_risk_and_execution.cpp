@@ -178,7 +178,7 @@ void test_order_state_machine() {
     oms.request_cancel(token2);
     assert(ord->status == OrderStatus::PendingCancel);
 
-    oms.on_order_canceled(token2, 100);
+    oms.on_order_canceled(token2, 100, risk);
     assert(ord->status == OrderStatus::Canceled);
     assert(ord->leaves_qty == 0);
 

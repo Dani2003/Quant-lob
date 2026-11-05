@@ -1,71 +1,53 @@
-# Quant-LOB: Production-Grade Sub-Microsecond C++20 / Rust Limit Order Book & SIMD Alpha Engine
+# Quant-LOB: C++ Limit Order Book and Quant Research Prototype
 
 [![C++20](https://img.shields.io/badge/Language-C%2B%2B20-00599C?logo=cplusplus)](https://en.cppreference.com/w/cpp/20)
 [![Rust](https://img.shields.io/badge/Language-Rust_2021-DEA584?logo=rust)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/Language-Python_3.10+-3776AB?logo=python)](https://python.org/)
-[![Kernel Bypass](https://img.shields.io/badge/Networking-AF__XDP_%2F_MoldUDP64-success)](https://www.kernel.org/doc/html/latest/networking/af_xdp.html)
+[![Market Data](https://img.shields.io/badge/Market%20Data-PCAP%20%2F%20ITCH-blue)](https://www.nasdaqtrader.com/Trader.aspx?id=ITCH)
 [![SIMD](https://img.shields.io/badge/Vectorization-AVX2_%2F_SSE4.1-orange)](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html)
-[![Compliance](https://img.shields.io/badge/Pre--Trade_Risk-SEC_Rule_15c3--5-blueviolet)](https://www.sec.gov)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-An industrial-grade, mechanical-sympathy **Limit Order Book (LOB)**, **Sub-30ns Pre-Trade Risk Engine**, **Linux AF_XDP Zero-Copy Kernel Bypass Receiver**, **NASDAQ MoldUDP64 / ITCH 5.0 Multicast Wire Parser**, and **Rust SIMD Alpha Strategy Engine** engineered for tier-1 proprietary trading desks and quantitative market makers.
+Quant-LOB is a research and paper/replay prototype with a C++ price-time order book, ITCH message handling, basic risk/OMS logic, a separate Rust alpha demo, and a Python synthetic backtester. It has **no exchange session, live order routing, production AF_XDP socket, or demonstrated regulatory controls**. Do not connect it to a live account or treat its sample performance output as evidence of trading performance.
 
 ---
 
-## ⚡ Verified Production Benchmarks
+## Benchmark status
 
-All metrics benchmarked on Intel x86-64 Linux (`g++ -O3 -march=native -flto -DNDEBUG`, TSC cycle-accurate hardware profiler):
-
-| Subsystem Component | Metric | Hardware Throughput / Latency | Architectural Invariant |
-| :--- | :--- | :--- | :--- |
-| **Order Book Matcher (LOB)** | Tick-to-Trade FIFO Latency | **P50: 42 ns \| P99: 84 ns \| P99.9: 128 ns** | Flat-array direct index, $O(1)$ memory pool |
-| **ITCH 5.0 Binary Wire Parser** | Deserialization Throughput | **15.2 Million msgs/sec** | Zero-copy packed wire parsing, zero `malloc` |
-| **Pre-Trade Risk Gateway** | SEC 15c3-5 Multi-Check | **18.4 ns evaluation latency** | Branch-predicted (`__builtin_expect`), contiguous memory |
-| **Rust SIMD OBI & Micro-Price** | 4-Level Vectorized Processing | **225.1 Million calculations/sec** | AVX2/SSE4.1 `_mm_sub_ps` parallel arithmetic |
-| **Avellaneda-Stoikov Strategy** | Optimal Quote Generation | **97.33 Million decisions/sec (10.27 ns)** | Inventory risk penalty reservation skew |
-| **Binary PCAP Line-Rate Replay** | Raw Network Capture Ingestion | **476,000 pkts/sec (line rate)** | Ethernet/IPv4/UDP unwrapping without loss |
-| **4-Core Pipeline Execution** | End-to-End Autonomous Trading | **100,000 orders parsed & matched in 206 ms** | Lock-free SPSC ring buffers, dedicated CPU pinning |
+The repository has benchmark code, but the latency and throughput figures previously listed here had no reproducible run record or hardware metadata. They are removed pending controlled runs with raw samples and documented hardware/compiler settings. Existing binaries in `build/` are not benchmark evidence.
 
 ---
 
-## 🏛 High-Performance 4-Core Pipelined Architecture
+## Current architecture
 
-The engine adopts the **Single-Writer Principle** and **Mechanical Sympathy** to eliminate cross-core cache invalidations, OS context switching, and kernel networking overhead.
+The service is a local pipeline for synthetic ITCH input and PCAP replay. A worker parses queued ITCH messages into the book, a strategy worker evaluates snapshots, and an execution worker applies local risk checks and serializes OUCH-shaped messages. Acknowledgements are simulated; no venue connection exists. The AF_XDP header models UMEM/rings but does not attach to a NIC. Rust alpha code is a separate demo and is not called by the C++ service strategy loop.
 
 ```mermaid
 flowchart TD
-    subgraph Core0["Core 0: Ingress & Network Layer"]
-        NIC["10GbE / 25GbE NIC (AF_XDP / PCAP)"] -->|Zero-Copy UMEM Ring| Parser["MoldUDP64 & ITCH Wire Parser"]
-        Parser -->|Check 64-bit Seq| GapCheck{"Packet Gap?"}
-        GapCheck -->|No Drop| Ring1["SPSC Ingress Ring (65,536 slots)"]
-        GapCheck -->|Drop Detected| TCPReq["MoldUDP64 Out-of-Band TCP Recovery"]
+    subgraph Core0["Input"]
+        Input["Synthetic input / PCAP replay"] --> Parser["MoldUDP64 framing / ITCH dispatcher"]
+        Parser --> Ring1["SPSC ingress ring"]
     end
 
-    subgraph Core1["Core 1: Ultra-Fast Matching Engine"]
-        Ring1 -->|Pop AddOrderMsg| FIFO["O(1) Price-Time Priority LOB"]
-        FIFO -->|Direct Array Index| BookState["PriceLevel Intrusive Doubly-Linked List"]
-        BookState -->|Order Matched| Execution["Fill & Trade Event Generation"]
-        BookState -->|Top-of-Book Update| Ring2["SPSC Alpha Ring (Top 5 Book View)"]
+    subgraph Core1["Matching"]
+        Ring1 --> FIFO["Price-time priority LOB"]
+        FIFO -->|Book snapshot| Ring2["Top-5 snapshot ring"]
     end
 
-    subgraph Core2["Core 2: Quantitative Intelligence (Rust SIMD)"]
-        Ring2 -->|Pop Top5BookView| SIMD["Rust AVX2 / SSE4.1 SIMD Vector Engine"]
-        SIMD -->|Compute| OBI["4-Level Order Book Imbalance (OBI)"]
-        SIMD -->|Compute| Micro["Stoikov Volume-Weighted Micro-Price"]
-        SIMD -->|Compute| Skew["Avellaneda-Stoikov Inventory Reservation Skew"]
-        Skew -->|Emit Intent| Ring3["SPSC Execution Ring (StrategyOrderIntent)"]
+    subgraph Core2["Strategy"]
+        Ring2 --> Strategy["C++ strategy"]
+        Strategy --> OBI["Weighted 4-Level OBI"]
+        Strategy --> Micro["Micro-price and inventory skew"]
+        Strategy --> Ring3["SPSC intent ring"]
     end
 
-    subgraph Core3["Core 3: Risk Gateway & Execution OMS"]
-        Ring3 -->|Pop Intent| Risk["SEC Rule 15c3-5 Pre-Trade Risk Engine"]
-        Risk -->|Pass Checks| OMS["Zero-Allocation Order State Machine (OMS)"]
-        Risk -->|Violated| Kill["Atomic Kill-Switch / Drop Intent"]
-        OMS -->|Format Wire| OUCH["NASDAQ OUCH 5.0 Outbound Order ('O')"]
-        OMS -->|Fill Markouts| TCA["Real-Time TCA Adverse Selection Engine"]
+    subgraph Core3["Paper execution"]
+        Ring3 --> Risk["Local risk checks"]
+        Risk --> OMS["OMS"]
+        OMS -->|Serialize only; not sent| OUCH["OUCH-shaped bytes"]
     end
 
-    Core3 -.->|Lock-Free Updates| SHM["POSIX Shared Memory Telemetry (/dev/shm)"]
-    SHM -.->|Sub-Microsecond Read| Monitor["Python Real-Time Desk Dashboard"]
+    Core3 -.-> SHM["POSIX shared-memory telemetry"]
+    SHM -.-> Monitor["Python dashboard"]
 ```
 
 ---
@@ -88,7 +70,7 @@ Quant-lob/
 │   ├── order_state_machine.hpp  # Zero-allocation OMS lifecycle manager (65,536 resting order slots)
 │   ├── tca_engine.hpp           # Transaction Cost Analysis (TCA) & post-trade adverse selection markouts
 │   ├── shm_telemetry.hpp        # Lock-free POSIX Shared Memory telemetry block (/dev/shm)
-│   ├── trading_engine.hpp       # Production 4-Core Pipelined Autonomous Trading Engine
+│   ├── trading_engine.hpp       # Local paper/replay worker pipeline
 │   ├── quant_lob_c_api.h        # High-performance C-ABI bridge for Python ctypes bindings
 │   ├── tsc_clock.hpp            # Hardware cycle-accurate RDTSC profiler (P50/P90/P99/P99.9 metrics)
 │   └── cpu_affinity.hpp         # OS thread core pinning (pthread_setaffinity_np)
@@ -96,7 +78,7 @@ Quant-lob/
 │   ├── order_book.cpp           # Price-time priority matching logic & volume maintenance
 │   ├── feed_handler.cpp         # Zero-copy binary ITCH 5.0 protocol dispatcher
 │   ├── trading_engine.cpp       # 4-core pipelined engine implementation & lock-free inter-thread rings
-│   ├── trading_engine_main.cpp  # Production trading daemon binary entrypoint (lob_engine_service)
+│   ├── trading_engine_main.cpp  # Paper/replay service entrypoint (lob_engine_service)
 │   ├── quant_lob_c_api.cpp      # C-ABI export implementations
 │   └── main.cpp                 # 6-Stage production benchmark suite (LOB, ITCH, Risk, OMS)
 ├── tools/
@@ -123,51 +105,16 @@ Quant-lob/
 
 ---
 
-## 🔬 Core Engineering Deep Dive
+## Implementation status and known limits
 
-### 1. Mechanical Sympathy & Memory Hierarchy
-- **Zero Runtime Allocations**: Dynamic memory allocators (`malloc`/`new`) involve thread synchronization, heap metadata fragmentation, and unpredictable syscall latency. Quant-LOB pre-allocates all memory pools, ring buffers, and order state arrays during startup.
-- **Direct Flat Price Indexing**: Replacing tree-based dictionaries (`std::map`) with a direct fixed array (`PriceLevel price_levels_[MAX_PRICE_TICKS]`) ensures that price level lookup is a deterministic, branch-free single addition: `&price_levels_[price - min_price]`.
-- **False Sharing Elimination**: Producer and consumer pointers across threads are separated into individual 64-byte hardware cache lines (`alignas(64)`), preventing cache-coherency ping-ponging (MESI protocol invalidations).
-- **NUMA-Aware Page Pre-Faulting**: Large memory buffers are allocated using direct Linux `mbind` syscalls to lock pages into the NUMA node local to the executing CPU socket, avoiding UPI interconnect latency.
-
-### 2. Kernel Bypass Networking (AF_XDP)
-- Conventional Linux network stacks (`socket()`, `recvfrom()`) force packets through network drivers, sk_buff allocations, iptables, and kernel-to-userspace context switches ($1.5 - 3.5\,\mu\text{s}$ overhead).
-- **AF_XDP (eBPF XSK)** bypasses the kernel network stack, writing raw Ethernet frames directly into pre-allocated user-space UMEM ring buffers using zero-copy DMA memory.
-
-### 3. Wire Protocol Parsing (NASDAQ MoldUDP64 & ITCH 5.0)
-- Ingests variable-length length-prefixed ITCH messages from MoldUDP64 UDP multicast packets.
-- **Intrusive Gap Detection**: Tracks 64-bit sequence numbers in real-time. If a packet drop is detected (`received_seq > expected_seq`), an out-of-order gap is recorded in an intrusive table and an out-of-band MoldUDP64 TCP gap request packet is dispatched while live matching continues uninterrupted.
-
-### 4. Sub-30ns Pre-Trade Risk Engine (SEC Rule 15c3-5)
-Before any strategy order reaches the execution wire, it is validated against 8 hardware-optimized risk invariants in $\approx 18.4\,\text{ns}$:
-1. **Atomic Master Kill-Switch**: Sub-nanosecond execution halt.
-2. **Fat-Finger Maximum Order Size**: Hard ceiling on per-order share count.
-3. **Notional Value Guard**: Rejects orders exceeding capital thresholds.
-4. **Dynamic Price Collars**: Limits aggressiveness relative to prevailing BBO mid-price.
-5. **Sliding-Window Rate Limiter**: Suppresses runaway algorithmic execution bursts.
-6. **Maximum Gross & Net Capital Utilization**: SEC regulatory capital constraints.
-7. **Short-Sale Availability & Borrow Checks**: Prevents illegal short-locates.
-8. **Drawdown Protection**: Automatically liquidates inventory if maximum loss threshold is hit.
-
-### 5. Quantitative Intelligence (Rust SIMD)
-- **4-Level Order Book Imbalance (OBI)**:
-  $$\text{OBI}_k = \frac{\sum_{i=1}^k \text{BidVol}_i - \sum_{i=1}^k \text{AskVol}_i}{\sum_{i=1}^k \text{BidVol}_i + \sum_{i=1}^k \text{AskVol}_i} \in [-1.0, 1.0]$$
-  Computed concurrently across all 4 levels using AVX2 vector instructions (`_mm256_sub_ps`, `_mm256_div_ps`).
-- **Stoikov Volume-Weighted Micro-Price**:
-  $$\text{MicroPrice} = \frac{\text{BidVol} \cdot \text{AskPrice} + \text{AskVol} \cdot \text{BidPrice}}{\text{BidVol} + \text{AskVol}}$$
-- **Avellaneda-Stoikov Inventory Skew**:
-  $$R(s, q) = \text{MicroPrice} - q \cdot \gamma \cdot \sigma^2$$
-  Where $q$ is the current net inventory and $\gamma$ is the inventory risk aversion parameter. When long ($q > 0$), the reservation price skews downward to deter bids and attract aggressive asks.
-
-### 6. Transaction Cost Analysis (TCA) & Adverse Selection Markouts
-To quantify execution quality, the TCA engine logs post-trade adverse selection curves at horizons of $100\,\mu\text{s}, 1\,\text{ms}, 10\,\text{ms}, 100\,\text{ms}$:
-$$\text{RealizedSpread}_{\Delta t} = 2 \cdot D \cdot (P_{\text{fill}} - \text{Mid}_{\tau + \Delta t})$$
-$$\text{AdverseSelection}_{\Delta t} = 2 \cdot D \cdot (\text{Mid}_{\tau + \Delta t} - \text{Mid}_{\tau})$$
-Where $D = +1$ for buy orders and $-1$ for sell orders.
-
----
-
+- The order book uses a preallocated price-level array and order pool. Active price levels are kept in sorted linked lists, so insertion of a new level is not O(1).
+- The executable accepts synthetic ITCH messages or PCAP replay. Feed correctness still needs protocol fixture coverage for real captures, every supported message, malformed frames, and sequence recovery.
+- Risk checks are local safeguards, not a compliance implementation. Outstanding order quantity is reserved against configured position limits; borrow/locate, gross exposure, venue limits, and liquidation workflows are not implemented.
+- OUCH serialization exists, but the service has no exchange session or outbound order transport. Acknowledgements are paper-mode behavior.
+- The Python backtester uses generated/simplified event flow and a simplified passive fill model. Its metrics are exploratory, not a validated strategy result.
+- Shared-memory dashboard data is live only while a compatible engine instance is running on POSIX. Use `python python/monitor_dashboard.py --demo` for explicitly simulated values.
+- `include/kernel_bypass_xdp.hpp` simulates descriptor and UMEM behavior; it does not create an AF_XDP socket, attach an XDP program, or receive from a NIC.
+- The Rust SIMD/strategy crate is a separate executable demo. The C++ pipeline uses its own strategy implementation.
 ## 🛠 Step-by-Step Build & Execution Guide
 
 ### Prerequisites
@@ -185,7 +132,7 @@ cmake --build . --config Release -j$(nproc)
 ```
 
 ### 2. Run Comprehensive Invariant Test Suite
-All 4 test executables should complete with **100% PASS**:
+These test executables are available; their current status must be confirmed on the target Linux toolchain before relying on them:
 ```bash
 # 1. Limit Order Book Core Invariants (FIFO, sweeps, O(1) cancels)
 ./lob_tests
@@ -200,15 +147,18 @@ All 4 test executables should complete with **100% PASS**:
 ./lob_pcap_tests
 ```
 
-### 3. Run Production Hardware Benchmark
+### 3. Run the prototype benchmark executable (not a production measurement)
 ```bash
 ./lob_benchmark
 ```
 
-### 4. Launch Autonomous 4-Core Trading Engine Daemon
+### 4. Launch the paper/replay engine
 ```bash
-# Run 100,000 live synthetic ITCH packet ingress through the 4-core pipeline
+# Run 100,000 synthetic ITCH add messages through the local pipeline
 ./lob_engine_service --symbol AAPL --packets 100000
+
+# Override strategy, risk, synthetic-input, and CPU settings when needed
+./lob_engine_service --obi-threshold 0.30 --aggressive-obi-threshold 0.70 --quote-lot 50 --max-position 2000
 
 # Stream historical PCAP capture file directly through the engine
 ./lob_pcap_replay --generate 50000
@@ -221,13 +171,13 @@ cd ../alpha_engine
 cargo run --release
 ```
 
-### 6. Run Event-Driven Python Backtester & Live Terminal Monitor
+### 6. Run the Python synthetic backtester and dashboard
 ```bash
 cd ..
-# Run 50,000 tick backtest simulation with full TCA markouts
+# Run 50,000 synthetic events with simplified event-horizon markouts
 python3 python/run_quant_backtest.py
 
-# Launch Real-Time ASCII Trading Desk Terminal Monitor (via POSIX SHM)
+# Read telemetry from a running POSIX engine; add --demo for generated sample values
 python3 python/monitor_dashboard.py
 ```
 
@@ -236,28 +186,28 @@ python3 python/monitor_dashboard.py
 # Terminal 1: Launch the async UDP binary market data feed listener
 python3 python/udp_client_listener.py 9876
 
-# Terminal 2: Ingest packets and broadcast live depth & alpha ticks over UDP
+# Terminal 2: Ingest local synthetic messages and broadcast telemetry over UDP
 ./build/lob_engine_service --symbol AAPL --packets 100000 --udp-port 9876
 ```
 
 ---
 
-## 📊 Live Terminal Dashboard Preview
+## Dashboard preview (sample output)
 
-When running `python3 python/monitor_dashboard.py` alongside `lob_engine_service`:
+Illustrative layout only. Live values require a running POSIX engine; this is not a recorded session:
 
 ```
 ================================================================================
-         QUANT-LOB: HIGH-FREQUENCY TRADING DESK MONITOR (LIVE)                  
+         QUANT-LOB: PAPER / REPLAY TELEMETRY
 ================================================================================
- Status: ACTIVE | Engine: C++20 Zero-Alloc | Telemetry: Lock-Free SHM
+ Status: SAMPLE | Engine: C++ | Telemetry: Shared Memory
 --------------------------------------------------------------------------------
  MARKET DEPTH (BBO)                    | QUANTITATIVE ALPHA SIGNALS             
  Best Bid : $ 150.00  ( 50000 sh)     | Mid-Price     : $ 150.05               
  Best Ask : $ 150.10  ( 35000 sh)     | Micro-Price   : $ 150.0588             
  Spread   : $   0.10  (  10 ticks)    | 4-Level OBI   : +0.1765                 
 --------------------------------------------------------------------------------
- EXECUTION & RISK GATEWAY (SEC 15c3-5) | THROUGHPUT & HARDWARE LATENCY           
+ PAPER RISK / OMS                         | PIPELINE COUNTERS
  Net Position :    +100 shares         | Wire Packets  :    100,000            
  Realized PnL : $    +25.00            | Orders Matched:    100,000            
  Unrealized   : $    +15.00            | Trades Filled :     45,000            
@@ -267,15 +217,15 @@ When running `python3 python/monitor_dashboard.py` alongside `lob_engine_service
 
 ---
 
-## 🎓 Senior Quant Developer Interview Defense
+## Design notes
 
-| Architectural Decision | Why It Outperforms Standard Implementations |
+| Area | Current trade-off |
 | :--- | :--- |
-| **Why not `std::unordered_map` for the book?** | Hash tables experience hash collisions, bucket linked-list traversals, dynamic resizing re-allocations, and poor CPU cache locality. Direct array indexing has zero branch mispredictions and accesses memory in a single instruction (`O(1)` with $\approx 1\,\text{ns}$ latency). |
-| **Why Lock-Free SPSC instead of Mutex / Condition Variable?** | OS mutexes (`pthread_mutex_lock`) invoke kernel scheduler context switches ($\approx 1.2 - 2.5\,\mu\text{s}$) when contended. Lock-free SPSC ring buffers use atomic acquire-release semantics with shadow pointers, transferring messages between cores in $< 20\,\text{ns}$ with zero locks. |
-| **Why Cache-Line Isolation (`alignas(64)`)?** | Modern x86 processors operate in 64-byte cache line chunks. When Core 0 writes `head_` and Core 1 writes `tail_` on the same cache line, the MESI protocol invalidates both L1/L2 caches back and forth (False Sharing), degrading performance by up to $10\times$. Isolating them onto distinct cache lines guarantees private L1 cache ownership. |
-| **Why Rust for SIMD rather than pure C++?** | Rust's type system prevents data races at compile time across the FFI boundary, and LLVM auto-vectorization combined with explicit `core::arch::x86_64` intrinsics delivers memory-safe, zero-cost abstractions for complex alpha calculations. |
-| **Why evaluate TCA Adverse Selection in real time?** | Passive quoting earns the bid-ask spread only if the market does not immediately jump against your fill. Tracking 1ms markouts dynamically detects toxic institutional flow and triggers quote widening or cancellation before taking massive inventory losses. |
+| Order book | Preallocated storage limits some allocation jitter; new active price levels still require sorted-list traversal. |
+| Pipeline | SPSC rings provide a simple single-producer/single-consumer handoff. Latency and drop behavior still need measurement under load. |
+| Strategy | C++ and Rust implementations are separate; the service currently uses the C++ path. |
+| Execution | OUCH serialization is local only. There is no exchange gateway, acknowledgements or fill feed. |
+| Risk | Basic limits are useful for simulation; they are not a complete regulatory risk system. |
 
 ---
 

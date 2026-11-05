@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <algorithm>
 #include <cstring>
 #include <string_view>
 #include <array>
@@ -82,9 +83,21 @@ public:
         uint64_t timestamp_ns,
         RiskEngine& risk_engine) 
     {
-        size_t idx = hash_token(order_token);
+        if (order_token == 0 || side > 1 || price == 0 || qty == 0 || find_order(order_token)) return nullptr;
+        size_t idx = MaxOrders;
+        const size_t start = hash_token(order_token);
+        for (size_t probe = 0; probe < MaxOrders; ++probe) {
+            const size_t candidate = (start + probe) & IndexMask;
+            const OrderStatus status = orders_[candidate].status;
+            if (status == OrderStatus::Empty || status == OrderStatus::Filled ||
+                status == OrderStatus::Canceled || status == OrderStatus::Rejected ||
+                status == OrderStatus::RiskRejected) {
+                idx = candidate;
+                break;
+            }
+        }
+        if (idx == MaxOrders) return nullptr;
         TrackedOrder& order = orders_[idx];
-        
         order.order_token = order_token;
         order.exchange_ref = 0;
         order.side = side;
@@ -102,6 +115,7 @@ public:
             return &order;
         }
 
+        risk_engine.reserve_order(side, qty);
         order.status = OrderStatus::PendingNew;
         return &order;
     }
@@ -125,7 +139,8 @@ public:
         RiskEngine& risk_engine) noexcept 
     {
         TrackedOrder* order = find_order(order_token);
-        if (!order || (order->status != OrderStatus::Active && order->status != OrderStatus::PartiallyFilled)) {
+        if (!order || (order->status != OrderStatus::Active && order->status != OrderStatus::PartiallyFilled) ||
+            executed_shares == 0 || executed_shares > order->leaves_qty) {
             return false;
         }
 
@@ -134,6 +149,7 @@ public:
         order->total_executed_value += static_cast<uint64_t>(executed_shares) * static_cast<uint64_t>(execution_price);
 
         // Update Risk Engine position & PnL accounting
+        risk_engine.release_order(order->side, executed_shares);
         risk_engine.on_fill(order->side, execution_price, executed_shares);
 
         if (order->leaves_qty == 0) {
@@ -156,11 +172,13 @@ public:
     }
 
     /// Transition to Canceled upon OUCH OrderCanceled message
-    bool on_order_canceled(uint64_t order_token, uint32_t decrement_shares) noexcept {
+    bool on_order_canceled(uint64_t order_token, uint32_t decrement_shares, RiskEngine& risk_engine) noexcept {
         TrackedOrder* order = find_order(order_token);
         if (!order) return false;
 
-        order->leaves_qty = (order->leaves_qty > decrement_shares) ? (order->leaves_qty - decrement_shares) : 0;
+        const uint32_t released = std::min(order->leaves_qty, decrement_shares);
+        risk_engine.release_order(order->side, released);
+        order->leaves_qty -= released;
         if (order->leaves_qty == 0) {
             order->status = OrderStatus::Canceled;
         }
@@ -168,17 +186,23 @@ public:
     }
 
     /// Transition to Rejected upon OUCH OrderRejected message
-    bool on_order_rejected(uint64_t order_token) noexcept {
+    bool on_order_rejected(uint64_t order_token, RiskEngine& risk_engine) noexcept {
         TrackedOrder* order = find_order(order_token);
         if (!order) return false;
+        risk_engine.release_order(order->side, order->leaves_qty);
+        order->leaves_qty = 0;
         order->status = OrderStatus::Rejected;
         return true;
     }
 
     [[nodiscard]] inline TrackedOrder* find_order(uint64_t order_token) noexcept {
-        size_t idx = hash_token(order_token);
-        TrackedOrder& order = orders_[idx];
-        return (order.order_token == order_token && order.status != OrderStatus::Empty) ? &order : nullptr;
+        const size_t start = hash_token(order_token);
+        for (size_t probe = 0; probe < MaxOrders; ++probe) {
+            TrackedOrder& order = orders_[(start + probe) & IndexMask];
+            if (order.status == OrderStatus::Empty) return nullptr;
+            if (order.order_token == order_token) return &order;
+        }
+        return nullptr;
     }
 
 private:

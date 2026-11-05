@@ -28,28 +28,30 @@ void test_mold_udp64_parser() {
     uint16_t msg1_len = 36;
     *reinterpret_cast<uint16_t*>(buffer + offset) = to_big_endian16(msg1_len);
     offset += 2;
-    auto* m1 = reinterpret_cast<itch::AddOrderMsg*>(buffer + offset);
-    m1->length = to_big_endian16(msg1_len);
-    m1->message_type = 'A';
-    m1->order_ref_num = to_big_endian64(1001);
-    m1->buy_sell_indicator = 'B';
-    m1->shares = to_big_endian32(100);
-    m1->price = to_big_endian32(1000000);
-    std::memcpy(m1->stock, "AAPL    ", 8);
+    itch::AddOrderMsg m1{};
+    m1.length = to_big_endian16(msg1_len);
+    m1.message_type = 'A';
+    m1.order_ref_num = to_big_endian64(1001);
+    m1.buy_sell_indicator = 'B';
+    m1.shares = to_big_endian32(100);
+    m1.price = to_big_endian32(1000000);
+    std::memcpy(m1.stock, "AAPL    ", 8);
+    std::memcpy(buffer + offset, reinterpret_cast<const uint8_t*>(&m1) + sizeof(m1.length), msg1_len);
     offset += msg1_len;
 
     // Message 2: Add Sell Order 150 shares @ $100.10
     uint16_t msg2_len = 36;
     *reinterpret_cast<uint16_t*>(buffer + offset) = to_big_endian16(msg2_len);
     offset += 2;
-    auto* m2 = reinterpret_cast<itch::AddOrderMsg*>(buffer + offset);
-    m2->length = to_big_endian16(msg2_len);
-    m2->message_type = 'A';
-    m2->order_ref_num = to_big_endian64(1002);
-    m2->buy_sell_indicator = 'S';
-    m2->shares = to_big_endian32(150);
-    m2->price = to_big_endian32(1001000);
-    std::memcpy(m2->stock, "AAPL    ", 8);
+    itch::AddOrderMsg m2{};
+    m2.length = to_big_endian16(msg2_len);
+    m2.message_type = 'A';
+    m2.order_ref_num = to_big_endian64(1002);
+    m2.buy_sell_indicator = 'S';
+    m2.shares = to_big_endian32(150);
+    m2.price = to_big_endian32(1001000);
+    std::memcpy(m2.stock, "AAPL    ", 8);
+    std::memcpy(buffer + offset, reinterpret_cast<const uint8_t*>(&m2) + sizeof(m2.length), msg2_len);
     offset += msg2_len;
 
     // 1. Process initial sequential datagram

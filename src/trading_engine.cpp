@@ -1,4 +1,5 @@
 #include "trading_engine.hpp"
+#include "mold_udp64.hpp"
 #include <iomanip>
 #include <iostream>
 #include <cmath>
@@ -12,6 +13,11 @@
 
 namespace lob {
 
+static uint64_t monotonic_time_ns() noexcept {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
 PipelinedTradingEngine::PipelinedTradingEngine()
     : PipelinedTradingEngine(EngineConfig{}) {}
 
@@ -22,7 +28,6 @@ PipelinedTradingEngine::PipelinedTradingEngine(const EngineConfig& config)
 {
     book_ = std::make_unique<OrderBook>();
     feed_handler_ = std::make_unique<FeedHandler>(*book_);
-    mold_parser_ = std::make_unique<MoldUdp64Parser<1024>>(*feed_handler_);
 
     telemetry_mgr_.init_producer();
 
@@ -44,6 +49,8 @@ PipelinedTradingEngine::~PipelinedTradingEngine() {
 
 void PipelinedTradingEngine::start() {
     if (running_.exchange(true)) return;
+    matching_done_.store(false, std::memory_order_relaxed);
+    strategy_done_.store(false, std::memory_order_relaxed);
 
     matching_thread_ = std::thread(&PipelinedTradingEngine::matching_thread_loop, this);
     strategy_thread_ = std::thread(&PipelinedTradingEngine::strategy_thread_loop, this);
@@ -60,66 +67,85 @@ void PipelinedTradingEngine::stop() {
 
 bool PipelinedTradingEngine::inject_network_packet(const uint8_t* buffer, size_t length, uint64_t timestamp_ns) {
     (void)timestamp_ns;
-    if (__builtin_expect(!running_.load(std::memory_order_relaxed), 0)) return false;
+    if (!buffer || __builtin_expect(!running_.load(std::memory_order_relaxed), 0)) return false;
+
+    auto enqueue = [&](const uint8_t* bytes, size_t size) {
+        if (!bytes || size == 0 || size > sizeof(IngressMessage::bytes)) return false;
+        IngressMessage message{};
+        message.length = static_cast<uint8_t>(size);
+        std::memcpy(message.bytes, bytes, size);
+        while (!ingress_to_match_ring_.try_push(message)) {
+            if (!running_.load(std::memory_order_relaxed)) return false;
+            CPU_PAUSE();
+        }
+        messages_ingested_.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    };
+
+    // Direct ITCH payloads have a length prefix followed by a recognized message type.
+    if (buffer && length >= sizeof(itch::ItchHeader) &&
+        (buffer[2] == 'A' || buffer[2] == 'D' || buffer[2] == 'E' || buffer[2] == 'X' || buffer[2] == 'U')) {
+        const uint16_t msg_length = itch::read_be16(buffer);
+        const size_t total_length = sizeof(uint16_t) + static_cast<size_t>(msg_length);
+        if (total_length <= length) return enqueue(buffer, total_length);
+    }
 
     // Check if this is a MoldUDP64 packet
     if (length >= sizeof(MoldUdp64Header)) {
         const auto* header = reinterpret_cast<const MoldUdp64Header*>(buffer);
+        const uint64_t sequence = itch::read_be64(&header->sequence_number);
         uint16_t count = (std::endian::native == std::endian::little) ? 
                          __builtin_bswap16(header->message_count) : header->message_count;
-        if (count > 0 && count != 0xFFFF) {
+        const bool same_session = !mold_sequence_initialized_ ||
+                                  std::memcmp(header->session, mold_session_, sizeof(mold_session_)) == 0;
+        if (count > 0 && count != 0xFFFF && same_session &&
+            (!mold_sequence_initialized_ || sequence == expected_mold_sequence_)) {
+            // Validate the entire datagram before enqueueing any of its messages.
+            size_t check_offset = sizeof(MoldUdp64Header);
+            bool valid = true;
+            for (uint16_t i = 0; i < count; ++i) {
+                if (check_offset + 2 > length) { valid = false; break; }
+                uint16_t raw_len;
+                std::memcpy(&raw_len, buffer + check_offset, sizeof(raw_len));
+                const uint16_t msg_len = (std::endian::native == std::endian::little)
+                    ? __builtin_bswap16(raw_len) : raw_len;
+                check_offset += 2;
+                if (msg_len == 0 || static_cast<size_t>(msg_len) + 2 > sizeof(IngressMessage::bytes) ||
+                    check_offset + msg_len > length) { valid = false; break; }
+                check_offset += msg_len;
+            }
+            if (!valid) return false;
+
             size_t offset = sizeof(MoldUdp64Header);
             size_t parsed = 0;
             for (uint16_t i = 0; i < count && offset + 2 <= length; ++i) {
-                uint16_t raw_msg_len = *reinterpret_cast<const uint16_t*>(buffer + offset);
+                uint16_t raw_msg_len;
+                std::memcpy(&raw_msg_len, buffer + offset, sizeof(raw_msg_len));
                 uint16_t msg_len = (std::endian::native == std::endian::little) ? 
                                    __builtin_bswap16(raw_msg_len) : raw_msg_len;
                 offset += 2;
                 if (offset + msg_len > length) break;
 
                 const uint8_t* msg_ptr = buffer + offset;
-                char mtype = 0;
-                if (msg_ptr[0] == 'A') {
-                    mtype = 'A';
-                } else if (msg_len >= 3 && msg_ptr[2] == 'A') {
-                    mtype = 'A';
-                }
-
-                if (mtype == 'A') {
-                    itch::AddOrderMsg msg{};
-                    if (msg_ptr[0] == 'A') {
-                        msg.length = raw_msg_len;
-                        std::memcpy(&msg.message_type, msg_ptr, sizeof(itch::AddOrderMsg) - 2);
-                    } else {
-                        std::memcpy(&msg, msg_ptr, std::min(sizeof(itch::AddOrderMsg), static_cast<size_t>(msg_len)));
-                    }
-                    while (!ingress_to_match_ring_.try_push(msg)) {
-                        if (!running_.load(std::memory_order_relaxed)) return false;
-                        CPU_PAUSE();
-                    }
-                    parsed++;
+                uint8_t framed[64]{};
+                if (static_cast<size_t>(msg_len) + 2 <= sizeof(framed)) {
+                    std::memcpy(framed, &raw_msg_len, sizeof(raw_msg_len));
+                    std::memcpy(framed + 2, msg_ptr, msg_len);
+                    parsed += enqueue(framed, static_cast<size_t>(msg_len) + 2) ? 1 : 0;
                 }
                 offset += msg_len;
             }
             if (parsed > 0) {
-                messages_ingested_.fetch_add(parsed, std::memory_order_relaxed);
+                if (!mold_sequence_initialized_)
+                    std::memcpy(mold_session_, header->session, sizeof(mold_session_));
+                expected_mold_sequence_ = sequence + count;
+                mold_sequence_initialized_ = true;
                 return true;
             }
         }
     }
 
     // Direct ITCH message ingress
-    if (length >= sizeof(itch::AddOrderMsg)) {
-        itch::AddOrderMsg msg{};
-        std::memcpy(&msg, buffer, sizeof(itch::AddOrderMsg));
-        while (!ingress_to_match_ring_.try_push(msg)) {
-            if (!running_.load(std::memory_order_relaxed)) return false;
-            CPU_PAUSE();
-        }
-        messages_ingested_.fetch_add(1, std::memory_order_relaxed);
-        return true;
-    }
-
     return false;
 }
 
@@ -128,18 +154,21 @@ void PipelinedTradingEngine::matching_thread_loop() {
         CpuAffinity::pin_current_thread(config_.core_matching);
     }
 
-    itch::AddOrderMsg msg{};
+    IngressMessage msg{};
     size_t counter = 0;
 
-    while (running_.load(std::memory_order_relaxed)) {
+    while (running_.load(std::memory_order_relaxed) || !ingress_to_match_ring_.empty()) {
         if (ingress_to_match_ring_.try_pop(msg)) {
-            uint64_t oid = itch::read_be64(&msg.order_ref_num);
-            uint32_t shares = itch::read_be32(&msg.shares);
-            uint32_t price = itch::read_be32(&msg.price) / 100;
-            Side side = (msg.buy_sell_indicator == 'B') ? Side::Buy : Side::Sell;
-
-            (void)book_->add_limit_order(oid, 1, side, price, shares);
-            orders_matched_.fetch_add(1, std::memory_order_relaxed);
+            if (msg.length >= sizeof(itch::AddOrderMsg) && msg.bytes[2] == 'A') {
+                char expected_symbol[8];
+                std::memset(expected_symbol, ' ', sizeof(expected_symbol));
+                std::memcpy(expected_symbol, config_.symbol.data(), config_.symbol.size());
+                const auto* add = reinterpret_cast<const itch::AddOrderMsg*>(msg.bytes);
+                if (std::memcmp(add->stock, expected_symbol, sizeof(expected_symbol)) != 0) continue;
+            }
+            const size_t consumed = feed_handler_->process_packet(msg.bytes, msg.length);
+            if (consumed != 0 && msg.length >= 3 && msg.bytes[2] == 'A')
+                orders_matched_.fetch_add(1, std::memory_order_relaxed);
 
             // Periodically publish depth view to alpha engine
             if ((++counter & 0x0F) == 0) {
@@ -151,6 +180,12 @@ void PipelinedTradingEngine::matching_thread_loop() {
             CPU_PAUSE();
         }
     }
+    if (counter & 0x0F) {
+        Top5BookView final_view{};
+        book_->get_top5_view(final_view);
+        while (!match_to_alpha_ring_.try_push(final_view)) CPU_PAUSE();
+    }
+    matching_done_.store(true, std::memory_order_release);
 }
 
 void PipelinedTradingEngine::strategy_thread_loop() {
@@ -160,7 +195,8 @@ void PipelinedTradingEngine::strategy_thread_loop() {
 
     Top5BookView view{};
 
-    while (running_.load(std::memory_order_relaxed)) {
+    while (running_.load(std::memory_order_relaxed) || !match_to_alpha_ring_.empty() ||
+           !matching_done_.load(std::memory_order_acquire)) {
         if (match_to_alpha_ring_.try_pop(view)) {
             if (view.bid_depth == 0 || view.ask_depth == 0) continue;
 
@@ -179,9 +215,17 @@ void PipelinedTradingEngine::strategy_thread_loop() {
             double micro_price = (total_vol > 0) ? 
                 (static_cast<double>(bid_vol) * best_ask + static_cast<double>(ask_vol) * best_bid) / total_vol : mid_price;
 
-            // SIMD-vectorized 4-level Order Book Imbalance (OBI)
-            float obi_l1 = (bid_vol + ask_vol > 0) ? 
-                static_cast<float>(static_cast<int64_t>(bid_vol) - static_cast<int64_t>(ask_vol)) / static_cast<float>(bid_vol + ask_vol) : 0.0f;
+            // Configurable volume-decay weighted four-level imbalance.
+            double weighted_diff = 0.0;
+            double weighted_sum = 0.0;
+            for (size_t level = 0; level < 4 && level < view.bid_depth && level < view.ask_depth; ++level) {
+                const double weight = config_.obi_level_weights[level];
+                const double bid_level = view.bid_volumes[level];
+                const double ask_level = view.ask_volumes[level];
+                weighted_diff += weight * (bid_level - ask_level);
+                weighted_sum += weight * (bid_level + ask_level);
+            }
+            const float obi_l1 = weighted_sum > 0.0 ? static_cast<float>(weighted_diff / weighted_sum) : 0.0f;
 
             // Avellaneda-Stoikov Inventory Reservation Price Skew
             int64_t curr_pos = risk_engine_.current_position();
@@ -198,7 +242,7 @@ void PipelinedTradingEngine::strategy_thread_loop() {
             intent.obi = obi_l1;
 
             if (obi_l1 > config_.obi_threshold && reservation_price > mid_price) {
-                if (obi_l1 > 0.60f) {
+                if (obi_l1 > config_.aggressive_obi_threshold) {
                     intent.action = StrategyOrderIntent::Action::AggressiveTakeBuy;
                     intent.side = 0;
                     intent.bid_price = best_ask;
@@ -210,7 +254,7 @@ void PipelinedTradingEngine::strategy_thread_loop() {
                     intent.qty = config_.quote_lot_size;
                 }
             } else if (obi_l1 < -config_.obi_threshold && reservation_price < mid_price) {
-                if (obi_l1 < -0.60f) {
+                if (obi_l1 < -config_.aggressive_obi_threshold) {
                     intent.action = StrategyOrderIntent::Action::AggressiveTakeSell;
                     intent.side = 1;
                     intent.ask_price = best_bid;
@@ -221,7 +265,7 @@ void PipelinedTradingEngine::strategy_thread_loop() {
                     intent.ask_price = best_ask;
                     intent.qty = config_.quote_lot_size;
                 }
-            } else if (spread >= 2) {
+            } else if (spread >= config_.min_spread_ticks) {
                 intent.action = StrategyOrderIntent::Action::QuoteTwoSided;
                 intent.bid_price = best_bid;
                 intent.ask_price = best_ask;
@@ -235,6 +279,7 @@ void PipelinedTradingEngine::strategy_thread_loop() {
             CPU_PAUSE();
         }
     }
+    strategy_done_.store(true, std::memory_order_release);
 }
 
 void PipelinedTradingEngine::execution_thread_loop() {
@@ -245,12 +290,15 @@ void PipelinedTradingEngine::execution_thread_loop() {
     StrategyOrderIntent intent{};
     uint8_t ouch_wire_buffer[128];
 
-    while (running_.load(std::memory_order_relaxed)) {
+    while (running_.load(std::memory_order_relaxed) || !alpha_to_exec_ring_.empty() ||
+           !strategy_done_.load(std::memory_order_acquire)) {
         if (alpha_to_exec_ring_.try_pop(intent)) {
+            const uint64_t risk_timestamp_ns = monotonic_time_ns();
             uint64_t t0 = TscClock::rdtsc();
 
             double mid = intent.mid_price;
             uint32_t mid_ticks = static_cast<uint32_t>(mid);
+            risk_engine_.mark_to_market(mid_ticks);
 
             // Record market tick for TCA
             tca_engine_.record_market_tick(t0, mid_ticks);
@@ -259,7 +307,7 @@ void PipelinedTradingEngine::execution_thread_loop() {
                 intent.action == StrategyOrderIntent::Action::AggressiveTakeBuy) 
             {
                 uint64_t token = token_generator_.fetch_add(1, std::memory_order_relaxed);
-                auto* ord = oms_.submit_order(token, 0, intent.bid_price, intent.qty, mid_ticks, t0, risk_engine_);
+                auto* ord = oms_.submit_order(token, 0, intent.bid_price, intent.qty, mid_ticks, risk_timestamp_ns, risk_engine_);
 
                 if (__builtin_expect(ord && ord->status == OrderStatus::PendingNew, 1)) {
                     (void)OuchSerializer::serialize_enter_order(ouch_wire_buffer, token, 'B', intent.qty, config_.symbol, intent.bid_price);
@@ -271,7 +319,7 @@ void PipelinedTradingEngine::execution_thread_loop() {
                        intent.action == StrategyOrderIntent::Action::AggressiveTakeSell) 
             {
                 uint64_t token = token_generator_.fetch_add(1, std::memory_order_relaxed);
-                auto* ord = oms_.submit_order(token, 1, intent.ask_price, intent.qty, mid_ticks, t0, risk_engine_);
+                auto* ord = oms_.submit_order(token, 1, intent.ask_price, intent.qty, mid_ticks, risk_timestamp_ns, risk_engine_);
 
                 if (__builtin_expect(ord && ord->status == OrderStatus::PendingNew, 1)) {
                     (void)OuchSerializer::serialize_enter_order(ouch_wire_buffer, token, 'S', intent.qty, config_.symbol, intent.ask_price);
@@ -282,7 +330,7 @@ void PipelinedTradingEngine::execution_thread_loop() {
             } else if (intent.action == StrategyOrderIntent::Action::QuoteTwoSided) {
                 // Bid leg
                 uint64_t b_token = token_generator_.fetch_add(1, std::memory_order_relaxed);
-                auto* b_ord = oms_.submit_order(b_token, 0, intent.bid_price, intent.qty, mid_ticks, t0, risk_engine_);
+                auto* b_ord = oms_.submit_order(b_token, 0, intent.bid_price, intent.qty, mid_ticks, risk_timestamp_ns, risk_engine_);
                 if (b_ord && b_ord->status == OrderStatus::PendingNew) {
                     (void)OuchSerializer::serialize_enter_order(ouch_wire_buffer, b_token, 'B', intent.qty, config_.symbol, intent.bid_price);
                     oms_.on_order_accepted(b_token, b_token + 100000);
@@ -290,7 +338,7 @@ void PipelinedTradingEngine::execution_thread_loop() {
 
                 // Ask leg
                 uint64_t a_token = token_generator_.fetch_add(1, std::memory_order_relaxed);
-                auto* a_ord = oms_.submit_order(a_token, 1, intent.ask_price, intent.qty, mid_ticks, t0, risk_engine_);
+                auto* a_ord = oms_.submit_order(a_token, 1, intent.ask_price, intent.qty, mid_ticks, risk_timestamp_ns, risk_engine_);
                 if (a_ord && a_ord->status == OrderStatus::PendingNew) {
                     (void)OuchSerializer::serialize_enter_order(ouch_wire_buffer, a_token, 'S', intent.qty, config_.symbol, intent.ask_price);
                     oms_.on_order_accepted(a_token, a_token + 100000);
@@ -303,7 +351,8 @@ void PipelinedTradingEngine::execution_thread_loop() {
             // Update Shared Memory Telemetry Block
             auto* shm = telemetry_mgr_.get();
             if (shm) {
-                shm->sequence++;
+                std::atomic_ref<uint64_t> sequence(shm->sequence);
+                sequence.fetch_add(1, std::memory_order_acq_rel);
                 shm->heartbeat_timestamp_ns = t1;
 
                 shm->best_bid_price = intent.best_bid;
@@ -329,7 +378,7 @@ void PipelinedTradingEngine::execution_thread_loop() {
 
                 if (config_.enable_udp_streaming) {
                     BinaryMarketDataPacket pkt{};
-                    pkt.sequence = shm->sequence;
+                    pkt.sequence = sequence.load(std::memory_order_relaxed) + 1;
                     pkt.timestamp_ns = t1;
                     std::memcpy(pkt.symbol, config_.symbol.data(), std::min(sizeof(pkt.symbol), config_.symbol.size()));
                     pkt.bid_price = intent.best_bid;
@@ -341,6 +390,7 @@ void PipelinedTradingEngine::execution_thread_loop() {
                     pkt.obi = intent.obi;
                     udp_pub_.publish_tick(pkt);
                 }
+                sequence.fetch_add(1, std::memory_order_release);
             }
         } else {
             CPU_PAUSE();
@@ -357,9 +407,9 @@ void PipelinedTradingEngine::print_status_dashboard() const {
     std::cout << "==========================================================\n";
     std::cout << "Symbol                     : " << config_.symbol << "\n";
     std::cout << "Messages Ingested          : " << shm->messages_ingested << "\n";
-    std::cout << "Orders Matched in Book     : " << shm->orders_matched << "\n";
-    std::cout << "Trades Executed            : " << shm->trades_executed << "\n";
-    std::cout << "Volume Traded              : " << shm->volume_traded << " shares\n";
+    std::cout << "Add Messages Processed     : " << shm->orders_matched << "\n";
+    std::cout << "Market Executions          : " << shm->trades_executed << "\n";
+    std::cout << "Market Volume              : " << shm->volume_traded << " shares\n";
     std::cout << "----------------------------------------------------------\n";
     std::cout << "Best Bid                   : $" << std::fixed << std::setprecision(2) << (shm->best_bid_price / 100.0) 
               << " (" << shm->best_bid_volume << ")\n";

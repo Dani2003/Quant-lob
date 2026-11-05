@@ -18,6 +18,8 @@ pub enum StrategyAction {
 pub struct StrategyConfig {
     /// OBI threshold to trigger directional conviction (-1.0 to +1.0)
     pub obi_threshold: f32,
+    /// Imbalance level at which the strategy crosses the spread.
+    pub aggressive_obi_threshold: f32,
     /// Minimum spread in ticks required to provide liquidity
     pub min_spread_ticks: u32,
     /// Maximum allowed absolute inventory before hard quote shading
@@ -32,6 +34,7 @@ impl Default for StrategyConfig {
     fn default() -> Self {
         Self {
             obi_threshold: 0.25,
+            aggressive_obi_threshold: 0.60,
             min_spread_ticks: 2,
             max_inventory: 1000,
             inventory_gamma: 0.005,
@@ -87,7 +90,7 @@ impl HftAlphaStrategy {
         if top_obi > self.config.obi_threshold && reservation_price > signal.mid_price {
             // Strong upward book momentum: if inventory allows, take liquidity or join best bid
             if self.current_inventory < self.config.max_inventory {
-                if top_obi > 0.60 {
+                if top_obi > self.config.aggressive_obi_threshold {
                     // Toxic order flow coming: Aggressively take ask before queue depletes
                     return StrategyAction::AggressiveBuy {
                         price: best_ask,
@@ -104,7 +107,7 @@ impl HftAlphaStrategy {
         } else if top_obi < -self.config.obi_threshold && reservation_price < signal.mid_price {
             // Strong downward book momentum
             if self.current_inventory > -self.config.max_inventory {
-                if top_obi < -0.60 {
+                if top_obi < -self.config.aggressive_obi_threshold {
                     // Aggressively cross spread to liquidate / sell
                     return StrategyAction::AggressiveSell {
                         price: best_bid,

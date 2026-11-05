@@ -20,10 +20,12 @@ size_t FeedHandler::process_packet(const uint8_t* buffer, size_t bytes_available
                 const auto* msg = reinterpret_cast<const itch::AddOrderMsg*>(buffer);
                 const uint64_t oid = itch::read_be64(&msg->order_ref_num);
                 const uint32_t shares = itch::read_be32(&msg->shares);
+                if (msg->buy_sell_indicator != 'B' && msg->buy_sell_indicator != 'S') break;
                 const uint32_t price = itch::read_be32(&msg->price) / 100; // normalize to cent ticks
                 const Side side = (msg->buy_sell_indicator == 'B') ? Side::Buy : Side::Sell;
+                const uint64_t ts = itch::read_be48(msg->timestamp);
 
-                (void)book_.add_limit_order(oid, 1, side, price, shares);
+                (void)book_.add_limit_order(oid, 1, side, price, shares, ts);
             }
             break;
         }
@@ -37,12 +39,24 @@ size_t FeedHandler::process_packet(const uint8_t* buffer, size_t bytes_available
             break;
         }
 
+        case 'E': {
+            if (sizeof(uint16_t) + msg_len >= sizeof(itch::OrderExecutedMsg)) {
+                const auto* msg = reinterpret_cast<const itch::OrderExecutedMsg*>(buffer);
+                const uint64_t oid = itch::read_be64(&msg->order_ref_num);
+                const uint32_t shares = itch::read_be32(&msg->executed_shares);
+                const uint64_t match_number = itch::read_be64(&msg->match_number);
+                const uint64_t ts = itch::read_be48(msg->timestamp);
+                (void)book_.execute_order(oid, shares, match_number, ts);
+            }
+            break;
+        }
+
         case 'X': {
             if (sizeof(uint16_t) + msg_len >= sizeof(itch::OrderCancelMsg)) {
                 const auto* msg = reinterpret_cast<const itch::OrderCancelMsg*>(buffer);
                 const uint64_t oid = itch::read_be64(&msg->order_ref_num);
-                // In ITCH, partial cancel reduces shares, full cancel deletes
-                (void)book_.cancel_order(oid);
+                const uint32_t shares = itch::read_be32(&msg->canceled_shares);
+                (void)book_.reduce_order(oid, shares);
             }
             break;
         }
@@ -55,9 +69,8 @@ size_t FeedHandler::process_packet(const uint8_t* buffer, size_t bytes_available
                 const uint32_t shares = itch::read_be32(&msg->shares);
                 const uint32_t price = itch::read_be32(&msg->price) / 100;
 
-                // Atomic replace: Cancel original, insert new with refreshed priority
-                (void)book_.cancel_order(orig_oid);
-                (void)book_.add_limit_order(new_oid, 1, Side::Buy, price, shares);
+                const uint64_t ts = itch::read_be48(msg->timestamp);
+                (void)book_.replace_order(orig_oid, new_oid, price, shares, ts);
             }
 
             break;

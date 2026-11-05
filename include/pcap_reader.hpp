@@ -213,14 +213,15 @@ public:
             *reinterpret_cast<uint16_t*>(payload + offset) = (std::endian::native == std::endian::little) ? 
                                                              __builtin_bswap16(msg1_len) : msg1_len;
             offset += 2;
-            auto* m1 = reinterpret_cast<itch::AddOrderMsg*>(payload + offset);
-            m1->length = (std::endian::native == std::endian::little) ? __builtin_bswap16(msg1_len) : msg1_len;
-            m1->message_type = 'A';
-            m1->order_ref_num = (std::endian::native == std::endian::little) ? __builtin_bswap64(i * 2 + 1) : (i * 2 + 1);
-            m1->buy_sell_indicator = 'B';
-            m1->shares = (std::endian::native == std::endian::little) ? __builtin_bswap32(100) : 100;
-            m1->price = (std::endian::native == std::endian::little) ? __builtin_bswap32(1500000) : 1500000;
-            std::memcpy(m1->stock, "AAPL    ", 8);
+            itch::AddOrderMsg m1{};
+            m1.length = (std::endian::native == std::endian::little) ? __builtin_bswap16(msg1_len) : msg1_len;
+            m1.message_type = 'A';
+            m1.order_ref_num = (std::endian::native == std::endian::little) ? __builtin_bswap64(i * 2 + 1) : (i * 2 + 1);
+            m1.buy_sell_indicator = 'B';
+            m1.shares = (std::endian::native == std::endian::little) ? __builtin_bswap32(100) : 100;
+            m1.price = (std::endian::native == std::endian::little) ? __builtin_bswap32(1500000) : 1500000;
+            std::memcpy(m1.stock, "AAPL    ", 8);
+            std::memcpy(payload + offset, reinterpret_cast<const uint8_t*>(&m1) + sizeof(m1.length), msg1_len);
             offset += msg1_len;
 
             // Message 2: Add Order
@@ -228,14 +229,15 @@ public:
             *reinterpret_cast<uint16_t*>(payload + offset) = (std::endian::native == std::endian::little) ? 
                                                              __builtin_bswap16(msg2_len) : msg2_len;
             offset += 2;
-            auto* m2 = reinterpret_cast<itch::AddOrderMsg*>(payload + offset);
-            m2->length = (std::endian::native == std::endian::little) ? __builtin_bswap16(msg2_len) : msg2_len;
-            m2->message_type = 'A';
-            m2->order_ref_num = (std::endian::native == std::endian::little) ? __builtin_bswap64(i * 2 + 2) : (i * 2 + 2);
-            m2->buy_sell_indicator = 'S';
-            m2->shares = (std::endian::native == std::endian::little) ? __builtin_bswap32(100) : 100;
-            m2->price = (std::endian::native == std::endian::little) ? __builtin_bswap32(1501000) : 1501000;
-            std::memcpy(m2->stock, "AAPL    ", 8);
+            itch::AddOrderMsg m2{};
+            m2.length = (std::endian::native == std::endian::little) ? __builtin_bswap16(msg2_len) : msg2_len;
+            m2.message_type = 'A';
+            m2.order_ref_num = (std::endian::native == std::endian::little) ? __builtin_bswap64(i * 2 + 2) : (i * 2 + 2);
+            m2.buy_sell_indicator = 'S';
+            m2.shares = (std::endian::native == std::endian::little) ? __builtin_bswap32(100) : 100;
+            m2.price = (std::endian::native == std::endian::little) ? __builtin_bswap32(1501000) : 1501000;
+            std::memcpy(m2.stock, "AAPL    ", 8);
+            std::memcpy(payload + offset, reinterpret_cast<const uint8_t*>(&m2) + sizeof(m2.length), msg2_len);
             offset += msg2_len;
 
             seq += 2;

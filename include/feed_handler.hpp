@@ -49,6 +49,13 @@ inline uint64_t read_be64(const void* ptr) noexcept {
 #endif
 }
 
+inline uint64_t read_be48(const void* ptr) noexcept {
+    const auto* bytes = static_cast<const uint8_t*>(ptr);
+    uint64_t value = 0;
+    for (size_t i = 0; i < 6; ++i) value = (value << 8) | bytes[i];
+    return value;
+}
+
 /**
  * @brief Binary NASDAQ ITCH 5.0 Packet Definitions (Exact wire format).
  */

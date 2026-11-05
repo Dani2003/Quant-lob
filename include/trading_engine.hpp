@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
 #include <atomic>
 #include <thread>
 #include <memory>
@@ -11,7 +12,6 @@
 #include "ring_buffer.hpp"
 #include "order_book.hpp"
 #include "feed_handler.hpp"
-#include "mold_udp64.hpp"
 #include "risk_engine.hpp"
 #include "ouch_messages.hpp"
 #include "order_state_machine.hpp"
@@ -62,11 +62,17 @@ struct EngineConfig {
     std::string symbol{"AAPL"};
     uint32_t quote_lot_size{100};
     float obi_threshold{0.25f};
+    float aggressive_obi_threshold{0.60f};
+    uint32_t min_spread_ticks{2};
+    std::array<float, 4> obi_level_weights{1.0f, 0.5f, 0.25f, 0.125f};
     double inventory_gamma{0.005};
     bool enable_core_pinning{true};
     bool enable_udp_streaming{true};
     std::string udp_host{"127.0.0.1"};
     uint16_t udp_port{9876};
+    bool paper_execution{true};
+    uint32_t synthetic_price_cents{15'000};
+    uint32_t synthetic_order_qty{100};
 };
 
 /// High-Performance Pipelined 4-Core Autonomous Trading Engine
@@ -110,17 +116,22 @@ private:
 
     EngineConfig config_;
     alignas(64) std::atomic<bool> running_{false};
+    alignas(64) std::atomic<bool> matching_done_{true};
+    alignas(64) std::atomic<bool> strategy_done_{true};
+    uint64_t expected_mold_sequence_{0};
+    bool mold_sequence_initialized_{false};
+    char mold_session_[10]{};
 
     // Thread-safe lock-free SPSC communication channels
     static constexpr size_t RING_CAPACITY = 65536;
-    RingBuffer<itch::AddOrderMsg, RING_CAPACITY> ingress_to_match_ring_{};
+    struct IngressMessage { uint8_t length{0}; uint8_t bytes[64]{}; };
+    RingBuffer<IngressMessage, RING_CAPACITY> ingress_to_match_ring_{};
     RingBuffer<Top5BookView, RING_CAPACITY> match_to_alpha_ring_{};
     RingBuffer<StrategyOrderIntent, RING_CAPACITY> alpha_to_exec_ring_{};
 
     // Core Components
     std::unique_ptr<OrderBook> book_;
     std::unique_ptr<FeedHandler> feed_handler_;
-    std::unique_ptr<MoldUdp64Parser<1024>> mold_parser_;
     RiskEngine risk_engine_;
     OrderStateMachine<65536> oms_;
     TcaEngine<16384, 32768> tca_engine_;

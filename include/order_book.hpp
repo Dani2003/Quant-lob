@@ -129,7 +129,7 @@ struct alignas(16) Top5BookView {
  * Engineered for HFT production requirements:
  * - Strict Price-Time (FIFO) priority matching.
  * - Flat price array with direct O(1) indexing (zero std::map heap allocations).
- * - Intrusive doubly-linked active price ladders for instantaneous best bid/ask access.
+ * - Intrusive sorted price ladders for best bid/ask access (new-level insertion is O(active levels)).
  * - Pre-allocated MemoryPool for order nodes (zero malloc/new on hot path).
  * - Pre-allocated open-addressing hash table for O(1) order cancellations by ID.
  */
@@ -177,6 +177,12 @@ public:
      * @return true if order existed and was cancelled; false if not found.
      */
     [[nodiscard]] bool cancel_order(uint64_t order_id) noexcept;
+    [[nodiscard]] bool reduce_order(uint64_t order_id, uint32_t quantity) noexcept;
+    [[nodiscard]] bool execute_order(uint64_t order_id, uint32_t quantity,
+                                     uint64_t execution_id, uint64_t timestamp_ns = 0) noexcept;
+    [[nodiscard]] bool replace_order(uint64_t old_order_id, uint64_t new_order_id,
+                                    uint32_t price, uint32_t quantity,
+                                    uint64_t timestamp_ns = 0) noexcept;
 
     // Top-of-Book and Market Data Queries
     [[nodiscard]] std::optional<PriceLevelInfo> get_best_bid() const noexcept;

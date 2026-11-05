@@ -28,7 +28,7 @@ bool OrderBook::add_limit_order(uint64_t order_id,
                                 uint32_t price,
                                 uint32_t quantity,
                                 uint64_t timestamp_ns) noexcept {
-    if (order_id == 0 || order_id == TOMBSTONE || quantity == 0 || price == 0 || price >= MAX_PRICE_TICKS) [[unlikely]] {
+    if (order_id == 0 || order_id == TOMBSTONE || find_order_map(order_id) || quantity == 0 || price == 0 || price >= MAX_PRICE_TICKS) [[unlikely]] {
         return false;
     }
 
@@ -139,6 +139,37 @@ bool OrderBook::cancel_order(uint64_t order_id) noexcept {
     order_pool_->deallocate(node);
     --total_resting_orders_;
     return true;
+}
+
+bool OrderBook::reduce_order(uint64_t order_id, uint32_t quantity) noexcept {
+    OrderNode* node = find_order_map(order_id);
+    if (!node || quantity == 0) return false;
+    if (quantity >= node->order.quantity) return cancel_order(order_id);
+    node->order.quantity -= quantity;
+    node->level->total_volume -= quantity;
+    return true;
+}
+
+bool OrderBook::execute_order(uint64_t order_id, uint32_t quantity,
+                              uint64_t execution_id, uint64_t timestamp_ns) noexcept {
+    OrderNode* node = find_order_map(order_id);
+    if (!node || quantity == 0 || quantity > node->order.quantity) return false;
+    const Side taker_side = node->order.side == Side::Buy ? Side::Sell : Side::Buy;
+    record_trade(order_id, execution_id, node->order.price, quantity, taker_side, timestamp_ns);
+    return reduce_order(order_id, quantity);
+}
+
+bool OrderBook::replace_order(uint64_t old_order_id, uint64_t new_order_id,
+                              uint32_t price, uint32_t quantity,
+                              uint64_t timestamp_ns) noexcept {
+    OrderNode* node = find_order_map(old_order_id);
+    if (!node || new_order_id == 0 || new_order_id == TOMBSTONE ||
+        (new_order_id != old_order_id && find_order_map(new_order_id)) ||
+        quantity == 0 || price == 0 || price >= MAX_PRICE_TICKS) return false;
+    const Side side = node->order.side;
+    const uint64_t client_id = node->order.client_id;
+    if (!cancel_order(old_order_id)) return false;
+    return add_limit_order(new_order_id, client_id, side, price, quantity, timestamp_ns);
 }
 
 void OrderBook::match_buy_limit(uint64_t order_id,

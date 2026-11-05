@@ -7,15 +7,18 @@ and outputs complete PnL and TCA execution quality metrics.
 
 import random
 import time
+import argparse
 from quant_lob import PyOrderBook, Side, MarketMakingStrategy, LobBacktester
 
-def generate_synthetic_tick_stream(num_ticks: int = 100_000):
-    print(f"Generating {num_ticks:,} realistic NASDAQ ITCH market ticks...")
-    random.seed(42)
+def generate_synthetic_tick_stream(num_ticks: int = 100_000, seed: int = 42,
+                                   start_price_cents: int = 15_000, base_order_qty: int = 100):
+    print(f"Generating {num_ticks:,} synthetic ITCH-shaped market events...")
+    random.seed(seed)
     ticks = []
 
-    mid_price = 15000 # $150.00
-    order_id = 1
+    mid_price = start_price_cents
+    next_order_id = 1
+    active_order_ids = []
 
     for i in range(num_ticks):
         # Brownian motion mid-price drift
@@ -32,14 +35,16 @@ def generate_synthetic_tick_stream(num_ticks: int = 100_000):
             offset = random.randint(1, 4)
 
         price = (mid_price - offset) if side == Side.BUY else (mid_price + offset)
-        qty = random.choice([100, 200, 500])
+        qty = random.choice([base_order_qty, 2 * base_order_qty, 5 * base_order_qty])
 
         action = "ADD"
-        if len(ticks) > 100 and random.random() < 0.20:
+        if active_order_ids and random.random() < 0.20:
             action = "CANCEL"
-            order_id = random.randint(max(1, len(ticks) - 100), len(ticks))
+            order_id = active_order_ids.pop(random.randrange(len(active_order_ids)))
         else:
-            order_id += 1
+            order_id = next_order_id
+            next_order_id += 1
+            active_order_ids.append(order_id)
 
         ticks.append({
             "id": order_id,
@@ -52,23 +57,42 @@ def generate_synthetic_tick_stream(num_ticks: int = 100_000):
     return ticks
 
 def main():
+    parser = argparse.ArgumentParser(description="Run the synthetic Quant-LOB paper backtest.")
+    parser.add_argument("--ticks", type=int, default=50_000)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--start-price-cents", type=int, default=15_000)
+    parser.add_argument("--order-qty", type=int, default=100)
+    parser.add_argument("--obi-threshold", type=float, default=0.25)
+    parser.add_argument("--aggressive-obi-threshold", type=float, default=0.60)
+    parser.add_argument("--min-spread-ticks", type=int, default=2)
+    parser.add_argument("--max-inventory", type=int, default=1_000)
+    parser.add_argument("--inventory-gamma", type=float, default=0.002)
+    parser.add_argument("--markout-horizon-events", type=int, default=50)
+    args = parser.parse_args()
+
+    if args.ticks < 1 or args.start_price_cents < 1 or args.order_qty < 1:
+        parser.error("ticks, start price, and order quantity must be positive")
+    if not 0.0 <= args.obi_threshold <= args.aggressive_obi_threshold <= 1.0:
+        parser.error("OBI thresholds must satisfy 0 <= obi <= aggressive <= 1")
+
     print("==========================================================")
     print("  QUANT-LOB: PYTHON QUANTITATIVE BACKTESTING SUITE        ")
     print("  Engine: High-Throughput C++20 LOB + TCA Markout Models  ")
     print("==========================================================\n")
 
-    num_ticks = 50_000
-    ticks = generate_synthetic_tick_stream(num_ticks)
+    num_ticks = args.ticks
+    ticks = generate_synthetic_tick_stream(num_ticks, args.seed, args.start_price_cents, args.order_qty)
 
     strategy = MarketMakingStrategy(
-        obi_threshold=0.25,
-        min_spread_ticks=2,
-        max_inventory=1000,
-        inventory_gamma=0.002,
-        quote_lot_size=100
+        obi_threshold=args.obi_threshold,
+        aggressive_obi_threshold=args.aggressive_obi_threshold,
+        min_spread_ticks=args.min_spread_ticks,
+        max_inventory=args.max_inventory,
+        inventory_gamma=args.inventory_gamma,
+        quote_lot_size=args.order_qty
     )
 
-    backtester = LobBacktester(strategy)
+    backtester = LobBacktester(strategy, markout_horizon_events=args.markout_horizon_events)
 
     print(f"Executing event-driven simulation across {num_ticks:,} market ticks...")
     t0 = time.perf_counter()
@@ -85,9 +109,9 @@ def main():
     print(f"Total Market Ticks Ingested : {result.total_ticks:,}")
     print(f"Total Strategy Trades       : {result.total_trades:,}")
     print(f"Total Volume Executed       : {result.total_volume:,} shares")
-    print(f"Final Realized PnL          : ${result.final_pnl_dollars:,.2f}")
+    print(f"Final Mark-to-Market PnL    : ${result.final_pnl_dollars:,.2f}")
     print(f"Maximum Drawdown            : ${result.max_drawdown_dollars:,.2f}")
-    print(f"Annualized Sharpe Ratio     : {result.sharpe_ratio:.2f}")
+    print(f"Per-Event Sharpe (not ann.) : {result.sharpe_ratio:.2f}")
     print(f"Trade Win Rate              : {result.win_rate:.2f}%")
     print(f"Ending Net Inventory        : {result.final_inventory:+,} shares")
     print("----------------------------------------------------------")

@@ -106,8 +106,13 @@ public:
         }
 
         // 6. Net Position Limit (Potential inventory after this order executes)
-        int64_t potential_pos = current_position_ + (side == 0 ? static_cast<int64_t>(qty) : -static_cast<int64_t>(qty));
-        if (__builtin_expect(std::abs(potential_pos) > config_.max_net_position, 0)) {
+        const int64_t current_position = current_position_.load(std::memory_order_relaxed);
+        const int64_t max_after_buys = current_position + pending_buy_qty_.load(std::memory_order_relaxed) +
+                                       (side == 0 ? static_cast<int64_t>(qty) : 0);
+        const int64_t min_after_sells = current_position - pending_sell_qty_.load(std::memory_order_relaxed) -
+                                        (side == 1 ? static_cast<int64_t>(qty) : 0);
+        if (__builtin_expect(max_after_buys > config_.max_net_position ||
+                             min_after_sells < -config_.max_net_position, 0)) {
             return RiskCheckResult::PositionLimitBreached;
         }
 
@@ -131,37 +136,57 @@ public:
         return RiskCheckResult::Approved;
     }
 
+    inline void reserve_order(uint8_t side, uint32_t qty) noexcept {
+        if (side == 0) pending_buy_qty_.fetch_add(qty, std::memory_order_relaxed);
+        else if (side == 1) pending_sell_qty_.fetch_add(qty, std::memory_order_relaxed);
+    }
+
+    inline void release_order(uint8_t side, uint32_t qty) noexcept {
+        auto& pending = (side == 0) ? pending_buy_qty_ : pending_sell_qty_;
+        int64_t current = pending.load(std::memory_order_relaxed);
+        while (current > 0 && !pending.compare_exchange_weak(
+            current, std::max<int64_t>(0, current - static_cast<int64_t>(qty)),
+            std::memory_order_relaxed)) {}
+    }
+
     /// On-Fill accounting update: Updates inventory, cash, and realized PnL
     inline void on_fill(uint8_t side, uint32_t fill_price, uint32_t fill_qty) noexcept {
         int64_t signed_qty = (side == 0) ? static_cast<int64_t>(fill_qty) : -static_cast<int64_t>(fill_qty);
-        int64_t prev_position = current_position_;
-        current_position_ += signed_qty;
+        int64_t prev_position = current_position_.load(std::memory_order_relaxed);
+        current_position_.store(prev_position + signed_qty, std::memory_order_relaxed);
 
-        // FIFO/Average cost simplified: If reducing or flipping inventory, realize PnL
-        if ((prev_position > 0 && side == 1) || (prev_position < 0 && side == 0)) {
-            int64_t closing_qty = std::min(std::abs(prev_position), static_cast<int64_t>(fill_qty));
+        const bool reducing = (prev_position > 0 && side == 1) || (prev_position < 0 && side == 0);
+        const int64_t closing_qty = reducing
+            ? std::min(std::abs(prev_position), static_cast<int64_t>(fill_qty)) : 0;
+        if (reducing) {
             int64_t price_delta = (prev_position > 0) ? 
                 (static_cast<int64_t>(fill_price) - avg_entry_price_) : 
                 (avg_entry_price_ - static_cast<int64_t>(fill_price));
             realized_pnl_ += price_delta * closing_qty;
         }
 
-        // Update average entry price if increasing inventory in current direction
-        if ((prev_position >= 0 && side == 0) || (prev_position <= 0 && side == 1)) {
-            uint64_t total_val = static_cast<uint64_t>(std::abs(prev_position)) * static_cast<uint64_t>(avg_entry_price_) 
-                               + static_cast<uint64_t>(fill_qty) * static_cast<uint64_t>(fill_price);
-            avg_entry_price_ = (current_position_ != 0) ? static_cast<int64_t>(total_val / std::abs(current_position_)) : 0;
-        } else if (current_position_ == 0) {
+        const int64_t new_position = prev_position + signed_qty;
+        if (new_position == 0) {
             avg_entry_price_ = 0;
+        } else if (reducing) {
+            if (static_cast<uint64_t>(fill_qty) > static_cast<uint64_t>(closing_qty))
+                avg_entry_price_ = fill_price;
+        } else {
+            const uint64_t old_abs = static_cast<uint64_t>(std::abs(prev_position));
+            const uint64_t total_abs = static_cast<uint64_t>(std::abs(new_position));
+            const uint64_t total_value = old_abs * static_cast<uint64_t>(avg_entry_price_) +
+                                         static_cast<uint64_t>(fill_qty) * static_cast<uint64_t>(fill_price);
+            avg_entry_price_ = static_cast<int64_t>(total_value / total_abs);
         }
     }
 
     /// Mark-to-market valuation against current BBO mid-price
     inline void mark_to_market(uint32_t mid_price) noexcept {
-        if (current_position_ != 0 && mid_price > 0 && avg_entry_price_ > 0) {
-            unrealized_pnl_ = (current_position_ > 0) ?
-                (static_cast<int64_t>(mid_price) - avg_entry_price_) * current_position_ :
-                (avg_entry_price_ - static_cast<int64_t>(mid_price)) * (-current_position_);
+        const int64_t position = current_position_.load(std::memory_order_relaxed);
+        if (position != 0 && mid_price > 0 && avg_entry_price_ > 0) {
+            unrealized_pnl_ = (position > 0) ?
+                (static_cast<int64_t>(mid_price) - avg_entry_price_) * position :
+                (avg_entry_price_ - static_cast<int64_t>(mid_price)) * (-position);
         } else {
             unrealized_pnl_ = 0;
         }
@@ -181,7 +206,7 @@ public:
         return kill_switch_.load(std::memory_order_relaxed);
     }
 
-    [[nodiscard]] inline int64_t current_position() const noexcept { return current_position_; }
+    [[nodiscard]] inline int64_t current_position() const noexcept { return current_position_.load(std::memory_order_relaxed); }
     [[nodiscard]] inline int64_t realized_pnl() const noexcept { return realized_pnl_; }
     [[nodiscard]] inline int64_t unrealized_pnl() const noexcept { return unrealized_pnl_; }
     [[nodiscard]] inline int64_t total_pnl() const noexcept { return realized_pnl_ + unrealized_pnl_; }
@@ -191,7 +216,9 @@ private:
     RiskConfig config_;
     alignas(CacheLineSize) std::atomic<bool> kill_switch_{false};
 
-    alignas(CacheLineSize) int64_t current_position_{0};
+    alignas(CacheLineSize) std::atomic<int64_t> current_position_{0};
+    alignas(CacheLineSize) std::atomic<int64_t> pending_buy_qty_{0};
+    alignas(CacheLineSize) std::atomic<int64_t> pending_sell_qty_{0};
     int64_t avg_entry_price_{0};
     int64_t realized_pnl_{0};
     int64_t unrealized_pnl_{0};

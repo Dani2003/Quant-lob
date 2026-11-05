@@ -31,13 +31,15 @@ class MarketMakingStrategy:
         min_spread_ticks: int = 2,
         max_inventory: int = 1000,
         inventory_gamma: float = 0.005,
-        quote_lot_size: int = 100
+        quote_lot_size: int = 100,
+        aggressive_obi_threshold: float = 0.60
     ):
         self.obi_threshold = obi_threshold
         self.min_spread_ticks = min_spread_ticks
         self.max_inventory = max_inventory
         self.inventory_gamma = inventory_gamma
         self.quote_lot_size = quote_lot_size
+        self.aggressive_obi_threshold = aggressive_obi_threshold
         self.inventory = 0
 
     def on_tick(self, book: PyOrderBook) -> Optional[Dict]:
@@ -64,12 +66,14 @@ class MarketMakingStrategy:
         # High-conviction alpha trigger
         if weighted_obi > self.obi_threshold and reservation_price > mid_price:
             if self.inventory < self.max_inventory:
-                action_type = "TAKE_BUY" if weighted_obi > 0.60 else "QUOTE_BID"
-                return {"action": action_type, "side": Side.BUY, "price": best_ask if action_type == "TAKE_BUY" else best_bid, "qty": self.quote_lot_size}
+                qty = min(self.quote_lot_size, self.max_inventory - self.inventory)
+                action_type = "TAKE_BUY" if weighted_obi > self.aggressive_obi_threshold else "QUOTE_BID"
+                return {"action": action_type, "side": Side.BUY, "price": best_ask if action_type == "TAKE_BUY" else best_bid, "qty": qty}
         elif weighted_obi < -self.obi_threshold and reservation_price < mid_price:
             if self.inventory > -self.max_inventory:
-                action_type = "TAKE_SELL" if weighted_obi < -0.60 else "QUOTE_ASK"
-                return {"action": action_type, "side": Side.SELL, "price": best_bid if action_type == "TAKE_SELL" else best_ask, "qty": self.quote_lot_size}
+                qty = min(self.quote_lot_size, self.max_inventory + self.inventory)
+                action_type = "TAKE_SELL" if weighted_obi < -self.aggressive_obi_threshold else "QUOTE_ASK"
+                return {"action": action_type, "side": Side.SELL, "price": best_bid if action_type == "TAKE_SELL" else best_ask, "qty": qty}
 
         # Symmetric quoting: Quote both sides of the spread
         if spread >= self.min_spread_ticks:
@@ -92,8 +96,9 @@ class MarketMakingStrategy:
 class LobBacktester:
     """Event-driven simulator running historical or synthetic market data feeds."""
 
-    def __init__(self, strategy: MarketMakingStrategy):
+    def __init__(self, strategy: MarketMakingStrategy, markout_horizon_events: int = 50):
         self.strategy = strategy
+        self.markout_horizon_events = max(0, markout_horizon_events)
         self.book = PyOrderBook()
         self.cash = 0.0
         self.inventory = 0
@@ -102,16 +107,27 @@ class LobBacktester:
         self.effective_spreads = []
         self.realized_spreads = []
         self.toxic_trades = 0
+        self.total_volume = 0
 
     def run_simulation(self, tick_stream: List[Dict]) -> BacktestResult:
         """
         Processes tick stream:
         Each tick is a dict: {'id': int, 'side': Side, 'price': int, 'qty': int, 'action': 'ADD'|'CANCEL'}
         """
+        self.cash = 0.0
+        self.inventory = 0
+        self.strategy.inventory = 0
+        self.pnl_history.clear()
+        self.trades.clear()
+        self.effective_spreads.clear()
+        self.realized_spreads.clear()
+        self.toxic_trades = 0
+        self.total_volume = 0
         peak_pnl = 0.0
         max_drawdown = 0.0
         active_bid = None
         active_ask = None
+        mids_by_event = []
 
         for idx, tick in enumerate(tick_stream):
             action = tick.get("action", "ADD")
@@ -122,27 +138,37 @@ class LobBacktester:
 
             # Check if incoming market flow fills our resting passive quotes
             if action == "ADD":
+                if self.inventory >= self.strategy.max_inventory:
+                    active_bid = None
+                if self.inventory <= -self.strategy.max_inventory:
+                    active_ask = None
                 if active_bid and tick_side == Side.SELL and tick_price <= active_bid["price"]:
                     # Our passive bid gets filled!
                     fill_price = active_bid["price"]
-                    fill_qty = min(active_bid["qty"], tick_qty)
+                    fill_qty = min(active_bid["qty"], tick_qty, max(0, self.strategy.max_inventory - self.inventory))
                     self.cash -= (fill_price * fill_qty) / 100.0
                     self.inventory += fill_qty
                     self.strategy.inventory = self.inventory
                     self.trades.append({"side": Side.BUY, "price": fill_price, "qty": fill_qty, "arrival_mid": active_bid["mid"], "tick_idx": idx})
-                    self.effective_spreads.append(fill_price - active_bid["mid"])
-                    active_bid = None
+                    self.total_volume += fill_qty
+                    self.effective_spreads.append(2.0 * (fill_price - active_bid["mid"]))
+                    active_bid["qty"] -= fill_qty
+                    if active_bid["qty"] == 0:
+                        active_bid = None
 
                 if active_ask and tick_side == Side.BUY and tick_price >= active_ask["price"]:
                     # Our passive ask gets filled!
                     fill_price = active_ask["price"]
-                    fill_qty = min(active_ask["qty"], tick_qty)
+                    fill_qty = min(active_ask["qty"], tick_qty, max(0, self.strategy.max_inventory + self.inventory))
                     self.cash += (fill_price * fill_qty) / 100.0
                     self.inventory -= fill_qty
                     self.strategy.inventory = self.inventory
                     self.trades.append({"side": Side.SELL, "price": fill_price, "qty": fill_qty, "arrival_mid": active_ask["mid"], "tick_idx": idx})
-                    self.effective_spreads.append(active_ask["mid"] - fill_price)
-                    active_ask = None
+                    self.total_volume += fill_qty
+                    self.effective_spreads.append(2.0 * (active_ask["mid"] - fill_price))
+                    active_ask["qty"] -= fill_qty
+                    if active_ask["qty"] == 0:
+                        active_ask = None
 
                 self.book.add_limit_order(order_id, 1, tick_side, tick_price, tick_qty)
             elif action == "CANCEL":
@@ -164,14 +190,16 @@ class LobBacktester:
                         self.inventory += qty
                         self.strategy.inventory = self.inventory
                         self.trades.append({"side": Side.BUY, "price": fill_price, "qty": qty, "arrival_mid": mid, "tick_idx": idx})
-                        self.effective_spreads.append(fill_price - mid)
+                        self.total_volume += qty
+                        self.effective_spreads.append(2.0 * (fill_price - mid))
                     elif action_type == "TAKE_SELL" and intent.get("price", 0) <= bid[0]:
                         fill_price = bid[0]
                         self.cash += (fill_price * qty) / 100.0
                         self.inventory -= qty
                         self.strategy.inventory = self.inventory
                         self.trades.append({"side": Side.SELL, "price": fill_price, "qty": qty, "arrival_mid": mid, "tick_idx": idx})
-                        self.effective_spreads.append(mid - fill_price)
+                        self.total_volume += qty
+                        self.effective_spreads.append(2.0 * (mid - fill_price))
                     elif action_type == "QUOTE_BID":
                         active_bid = {"price": intent["price"], "qty": qty, "mid": mid}
                     elif action_type == "QUOTE_ASK":
@@ -184,6 +212,7 @@ class LobBacktester:
 
             # Evaluate markouts for older trades (e.g. 50 ticks ahead)
             mid, _ = self.book.get_mid_and_spread()
+            mids_by_event.append(mid if mid > 0 else None)
             if mid > 0:
                 mtm_pnl = self.cash + (self.inventory * mid) / 100.0
                 self.pnl_history.append(mtm_pnl)
@@ -191,17 +220,21 @@ class LobBacktester:
                 max_drawdown = max(max_drawdown, peak_pnl - mtm_pnl)
 
         # Markout TCA calculation
+        valid_mids = [m for m in mids_by_event if m is not None]
+        last_mid = valid_mids[-1] if valid_mids else 0.0
         for t in self.trades:
-            eval_idx = min(len(self.pnl_history) - 1, t["tick_idx"] + 50)
-            post_mid = tick_stream[eval_idx]["price"] if eval_idx < len(tick_stream) else t["arrival_mid"]
+            eval_idx = min(len(mids_by_event) - 1, t["tick_idx"] + self.markout_horizon_events)
+            post_mid = mids_by_event[eval_idx] if eval_idx >= 0 else None
+            if post_mid is None:
+                post_mid = last_mid if last_mid > 0 else t["arrival_mid"]
             direction = 1.0 if t["side"] == Side.BUY else -1.0
-            realized = direction * (t["price"] - post_mid)
-            adverse = direction * (post_mid - t["arrival_mid"])
+            realized = 2.0 * direction * (t["price"] - post_mid)
+            adverse = -2.0 * direction * (post_mid - t["arrival_mid"])
             self.realized_spreads.append(realized)
             if adverse > 0:
                 self.toxic_trades += 1
 
-        final_pnl = self.pnl_history[-1] if self.pnl_history else 0.0
+        final_pnl = self.cash + (self.inventory * last_mid) / 100.0 if last_mid > 0 else self.cash
         
         # Calculate Sharpe Ratio
         if len(self.pnl_history) > 1:
@@ -209,7 +242,8 @@ class LobBacktester:
             mean_ret = sum(diffs) / len(diffs)
             var_ret = sum((r - mean_ret) ** 2 for r in diffs) / len(diffs)
             std_ret = math.sqrt(var_ret) if var_ret > 0 else 1.0
-            sharpe = (mean_ret / std_ret) * math.sqrt(252 * 6.5 * 3600) # Annualized
+            # Tick spacing is not a fixed wall-clock interval, so annualization would be misleading.
+            sharpe = mean_ret / std_ret
         else:
             sharpe = 0.0
 
@@ -219,7 +253,7 @@ class LobBacktester:
         return BacktestResult(
             total_ticks=len(tick_stream),
             total_trades=len(self.trades),
-            total_volume=len(self.trades) * self.strategy.quote_lot_size,
+            total_volume=self.total_volume,
             final_pnl_dollars=final_pnl,
             max_drawdown_dollars=max_drawdown,
             sharpe_ratio=sharpe,
