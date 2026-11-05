@@ -80,6 +80,7 @@ Quant-lob/
 │   ├── ouch_messages.hpp        # Packed binary NASDAQ OUCH 5.0 order entry wire serialization ('O', 'X')
 │   ├── order_state_machine.hpp  # Zero-allocation OMS lifecycle manager (65,536 resting order slots)
 │   ├── paper_depth_ledger.hpp   # Multi-level displayed depth consumption & alternation tracker
+│   ├── triple_buffer.hpp        # Wait-free 3-slot asynchronous buffer for data-race-free telemetry snapshots
 │   ├── tca_engine.hpp           # Transaction Cost Analysis (TCA) & post-trade adverse selection markouts
 │   ├── shm_telemetry.hpp        # Lock-free POSIX Shared Memory telemetry block (/dev/shm)
 │   ├── trading_engine.hpp       # Local paper/replay worker pipeline

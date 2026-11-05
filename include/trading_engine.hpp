@@ -21,6 +21,7 @@
 #include "shm_telemetry.hpp"
 #include "udp_publisher.hpp"
 #include "paper_depth_ledger.hpp"
+#include "triple_buffer.hpp"
 
 namespace lob {
 
@@ -146,6 +147,7 @@ private:
     ShmTelemetryManager telemetry_mgr_;
     LatencyProfiler<100'000> exec_profiler_;
     UdpMarketDataPublisher udp_pub_;
+    WaitFreeTripleBuffer<ShmTelemetryBlock> snapshot_buffer_;
     uint64_t last_active_bid_token_{0};
     uint64_t last_active_ask_token_{0};
     PaperDepthLedger ask_depth_ledger_;

@@ -53,6 +53,10 @@ void PipelinedTradingEngine::start() {
     matching_done_.store(false, std::memory_order_relaxed);
     strategy_done_.store(false, std::memory_order_relaxed);
 
+    // Seed initial clean baseline snapshot in the triple buffer
+    ShmTelemetryBlock initial_block{};
+    snapshot_buffer_.publish(initial_block);
+
     matching_thread_ = std::thread(&PipelinedTradingEngine::matching_thread_loop, this);
     strategy_thread_ = std::thread(&PipelinedTradingEngine::strategy_thread_loop, this);
     execution_thread_ = std::thread(&PipelinedTradingEngine::execution_thread_loop, this);
@@ -460,6 +464,7 @@ void PipelinedTradingEngine::execution_thread_loop() {
                     udp_pub_.publish_tick(pkt);
                 }
                 sequence.fetch_add(1, std::memory_order_release);
+                snapshot_buffer_.publish(*shm);
             }
         } else {
             CPU_PAUSE();
@@ -475,33 +480,34 @@ void PipelinedTradingEngine::execution_thread_loop() {
         oms_.on_order_canceled(last_active_ask_token_, config_.quote_lot_size, risk_engine_);
         last_active_ask_token_ = 0;
     }
+
+    auto* final_shm = telemetry_mgr_.get();
+    if (final_shm) {
+        final_shm->net_inventory = risk_engine_.current_position();
+        final_shm->realized_pnl_cents = risk_engine_.realized_pnl();
+        final_shm->unrealized_pnl_cents = risk_engine_.unrealized_pnl();
+        final_shm->total_pnl_cents = risk_engine_.total_pnl();
+        snapshot_buffer_.publish(*final_shm);
+    }
 }
 
 bool PipelinedTradingEngine::read_telemetry_snapshot(ShmTelemetryBlock& out) const noexcept {
-    const auto* shm = telemetry_mgr_.get();
-    if (!shm) return false;
-
-    // If all workers are joined, no thread is writing to shm; read directly
+    // 1. If workers are fully stopped and joined, read directly
     if (workers_joined_.load(std::memory_order_acquire)) {
-        std::memcpy(&out, shm, sizeof(ShmTelemetryBlock));
-        return true;
-    }
-
-    // Concurrent read during execution: validate consistent seqlock version
-    for (size_t retry = 0; retry < 100; ++retry) {
-        uint64_t seq0 = __atomic_load_n(&shm->sequence, __ATOMIC_ACQUIRE);
-        if (seq0 & 1) { // writer update in progress
-            CPU_PAUSE();
-            continue;
-        }
-        std::memcpy(&out, shm, sizeof(ShmTelemetryBlock));
-        uint64_t seq1 = __atomic_load_n(&shm->sequence, __ATOMIC_ACQUIRE);
-        if (seq0 == seq1) {
+        if (snapshot_buffer_.read_snapshot(out)) {
             return true;
         }
-        CPU_PAUSE();
+        const auto* shm = telemetry_mgr_.get();
+        if (shm) {
+            std::memcpy(&out, shm, sizeof(ShmTelemetryBlock));
+            return true;
+        }
+        return false;
     }
-    return false;
+
+    // 2. While workers are actively running, read an immutable snapshot from the wait-free triple buffer.
+    // This mathematically guarantees write_slot != read_slot at all times, eliminating C++ data races.
+    return snapshot_buffer_.read_snapshot(out);
 }
 
 void PipelinedTradingEngine::print_status_dashboard() const {

@@ -496,6 +496,50 @@ void test_paper_depth_ledger_collisions_and_capacity_exhaustion() {
     std::cout << "  -> Paper Depth Ledger Collisions & Capacity Exhaustion PASSED.\n";
 }
 
+void test_wait_free_triple_buffer_concurrency() {
+    std::cout << "[TEST] Running Wait-Free Triple Buffer Multithreaded Concurrency...\n";
+
+    struct TestPayload {
+        uint64_t seq{0};
+        uint64_t a{0};
+        uint64_t b{0};
+        uint64_t c{0};
+    };
+
+    WaitFreeTripleBuffer<TestPayload> buffer;
+    std::atomic<bool> stop_flag{false};
+    constexpr size_t TOTAL_WRITES = 50'000;
+
+    std::thread writer([&]() {
+        for (uint64_t i = 1; i <= TOTAL_WRITES; ++i) {
+            TestPayload p{i, i * 2, i * 3, i * 4};
+            buffer.publish(p);
+        }
+        stop_flag.store(true, std::memory_order_release);
+    });
+
+    uint64_t snapshots_read = 0;
+    while (!stop_flag.load(std::memory_order_acquire)) {
+        TestPayload out{};
+        if (buffer.read_snapshot(out)) {
+            // Verify payload consistency (no torn reads across non-atomic fields)
+            assert(out.b == out.a * 2);
+            assert(out.c == out.a * 3);
+            ++snapshots_read;
+        }
+    }
+    writer.join();
+
+    TestPayload final_out{};
+    bool ok = buffer.read_snapshot(final_out);
+    assert(ok);
+    assert(final_out.seq == TOTAL_WRITES);
+    (void)ok;
+    (void)snapshots_read;
+
+    std::cout << "  -> Wait-Free Triple Buffer Multithreaded Concurrency PASSED.\n";
+}
+
 void test_concurrent_dashboard_snapshot_and_workers_joined_state() {
     std::cout << "[TEST] Running Concurrent Dashboard Snapshot & Workers Joined State...\n";
 
@@ -511,22 +555,53 @@ void test_concurrent_dashboard_snapshot_and_workers_joined_state() {
     assert(engine->is_running() == true);
     assert(engine->are_workers_joined() == false);
 
-    // 1. Verify seqlock snapshot read succeeds while engine is running
-    ShmTelemetryBlock snapshot{};
-    bool ok = engine->read_telemetry_snapshot(snapshot);
-    assert(ok && "Seqlock snapshot read must succeed while engine is running");
-    (void)ok;
+    std::atomic<bool> feeder_running{true};
+    constexpr size_t PACKET_COUNT = 5'000;
 
-    // 2. Call print_status_dashboard() concurrently while engine is running
-    // This exercises the concurrent path: it must read the seqlock snapshot without touching OrderBook
+    // Background thread actively flooding the engine with ITCH packets to drive live telemetry updates
+    std::thread feeder([&]() {
+        for (size_t i = 0; i < PACKET_COUNT; ++i) {
+            itch::AddOrderMsg msg{};
+            std::memset(&msg, 0, sizeof(msg));
+            msg.length = (std::endian::native == std::endian::little) ? __builtin_bswap16(36) : 36;
+            msg.message_type = 'A';
+            msg.stock_locate = (std::endian::native == std::endian::little) ? __builtin_bswap16(1) : 1;
+            msg.order_ref_num = (std::endian::native == std::endian::little) ? __builtin_bswap64(i + 1) : (i + 1);
+            msg.buy_sell_indicator = (i % 2 == 0) ? 'B' : 'S';
+            msg.shares = (std::endian::native == std::endian::little) ? __builtin_bswap32(100) : 100;
+            uint32_t price = static_cast<uint32_t>((15000 + (i % 10)) * 100);
+            msg.price = (std::endian::native == std::endian::little) ? __builtin_bswap32(price) : price;
+            std::memset(msg.stock, ' ', sizeof(msg.stock));
+            std::memcpy(msg.stock, "AAPL", 4);
+
+            (void)engine->inject_network_packet(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+        }
+        feeder_running.store(false, std::memory_order_release);
+    });
+
+    // Main thread continuously reads live snapshots while writer is actively publishing
+    size_t live_reads = 0;
+    while (feeder_running.load(std::memory_order_acquire)) {
+        ShmTelemetryBlock snapshot{};
+        if (engine->read_telemetry_snapshot(snapshot)) {
+            // Verify invariant consistency
+            assert(snapshot.messages_ingested <= PACKET_COUNT);
+            ++live_reads;
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    feeder.join();
+    assert(live_reads > 0 && "Must capture live telemetry snapshots concurrently with active writer");
+
+    // Invoke dashboard once during live transition
     engine->print_status_dashboard();
 
-    // 3. Stop the engine: workers join cleanly
+    // Stop the engine: workers join cleanly
     engine->stop();
     assert(engine->is_running() == false);
     assert(engine->are_workers_joined() == true);
 
-    // 4. Verify post-stop quiescent dashboard call
+    // Verify post-stop quiescent dashboard call
     engine->print_status_dashboard();
 
     std::cout << "  -> Concurrent Dashboard Snapshot & Workers Joined State PASSED.\n";
@@ -545,6 +620,7 @@ int main() {
     test_oms_hash_collision_probing();
     test_paper_depth_ledger_price_alternation_and_replenishment();
     test_paper_depth_ledger_collisions_and_capacity_exhaustion();
+    test_wait_free_triple_buffer_concurrency();
     test_engine_shutdown_and_quiescent_reporting();
     test_concurrent_dashboard_snapshot_and_workers_joined_state();
 
