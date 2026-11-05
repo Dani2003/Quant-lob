@@ -119,13 +119,14 @@ Quant-lob/
 ## Implementation status and known limits
 
 - The order book uses a preallocated price-level array and order pool. Active price levels are kept in sorted linked lists, so insertion of a new level is not O(1).
-- The executable accepts synthetic ITCH messages or PCAP replay. Feed correctness still needs protocol fixture coverage for real captures, every supported message, malformed frames, and sequence recovery.
-- Risk checks are local safeguards, not a compliance implementation. Outstanding order quantity is reserved against configured position limits; borrow/locate, gross exposure, venue limits, and liquidation workflows are not implemented.
-- OUCH serialization exists, but the service has no exchange session or outbound order transport. Acknowledgements are paper-mode behavior.
-- The Python backtester uses generated/simplified event flow and a simplified passive fill model. Its metrics are exploratory, not a validated strategy result.
+- The executable accepts synthetic ITCH messages or PCAP replay. Feed handling focuses on core trading messages ('A', 'E', 'X', 'D', 'U'); administrative and regulatory messages are omitted. Sequence gaps are reported as discontinuities rather than triggering live TCP session recovery.
+- Risk checks are algorithmic guardrails (fat-finger price collars, max notional, rate limits), not legal compliance under SEC Rule 15c3-5. Outstanding quantity is reserved against position limits; borrow/locate, gross margin, and venue liquidation workflows are not implemented.
+- OUCH serialization formats valid wire bytes locally, but the service has no outbound exchange TCP session. Order acknowledgements and fill transitions are paper-mode simulations.
+- Paper execution fills are bounded by displayed BBO depth and consume liquidity per price tick to prevent duplicate fills against the same shares. Deeper book depletion, passive queue positioning, and venue market-data timing are not modeled.
+- The Python backtester uses synthetic Poisson event streams with 0.0 bps transaction fees. Its metrics are exploratory research tools, not historical backtests or live trading alpha.
 - Shared-memory dashboard data is live only while a compatible engine instance is running on POSIX. Use `python python/monitor_dashboard.py --demo` for explicitly simulated values.
-- `include/kernel_bypass_xdp.hpp` simulates descriptor and UMEM behavior; it does not create an AF_XDP socket, attach an XDP program, or receive from a NIC.
-- The Rust SIMD/strategy crate is a separate executable demo. The C++ pipeline uses its own strategy implementation.
+- `include/kernel_bypass_xdp.hpp` models AF_XDP descriptor rings and UMEM ring mechanics for testing; it does not attach an eBPF/XDP program or bind to a physical network card.
+- The Rust SIMD alpha crate is a separate standalone benchmark and FFI demonstration (`alpha_engine/`). The C++ engine pipeline runs its own internal C++ strategy loop.
 ## 🛠 Step-by-Step Build & Execution Guide
 
 ### Prerequisites
@@ -143,7 +144,7 @@ cmake --build . --config Release -j$(nproc)
 ```
 
 ### 2. Run Comprehensive Invariant Test Suite
-These test executables are available; their current status must be confirmed on the target Linux toolchain before relying on them:
+All four test suites are verified with 100% passing results under Linux x86-64 (GCC 15.2.0). Complete logs and reproduction instructions are documented in [`docs/VERIFICATION.md`](docs/VERIFICATION.md):
 ```bash
 # 1. Limit Order Book Core Invariants (FIFO, sweeps, O(1) cancels)
 ./lob_tests

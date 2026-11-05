@@ -140,6 +140,10 @@ private:
     UdpMarketDataPublisher udp_pub_;
     uint64_t last_active_bid_token_{0};
     uint64_t last_active_ask_token_{0};
+    uint32_t last_consumed_ask_price_{0};
+    uint32_t consumed_ask_vol_{0};
+    uint32_t last_consumed_bid_price_{0};
+    uint32_t consumed_bid_vol_{0};
 
     // Pipelined Worker Threads
     std::thread matching_thread_;

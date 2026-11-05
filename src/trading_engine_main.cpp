@@ -159,16 +159,18 @@ int main(int argc, char** argv) {
         const uint32_t base_price = config.synthetic_price_cents;
         for (size_t i = 0; i < simulated_packets && !g_stop_requested.load(std::memory_order_relaxed); ++i) {
             itch::AddOrderMsg msg{};
+            std::memset(&msg, 0, sizeof(msg));
             msg.length = (std::endian::native == std::endian::little) ? __builtin_bswap16(36) : 36;
             msg.message_type = 'A';
-            msg.stock_locate = 1;
+            msg.stock_locate = (std::endian::native == std::endian::little) ? __builtin_bswap16(1) : 1;
             msg.order_ref_num = (std::endian::native == std::endian::little) ? __builtin_bswap64(i + 1) : (i + 1);
             msg.buy_sell_indicator = (i % 2 == 0) ? 'B' : 'S';
             uint32_t shares = config.synthetic_order_qty;
             msg.shares = (std::endian::native == std::endian::little) ? __builtin_bswap32(shares) : shares;
             uint32_t price = static_cast<uint32_t>((base_price + (i % 20)) * 100);
             msg.price = (std::endian::native == std::endian::little) ? __builtin_bswap32(price) : price;
-            std::memcpy(msg.stock, config.symbol.data(), config.symbol.size());
+            std::memset(msg.stock, ' ', sizeof(msg.stock));
+            std::memcpy(msg.stock, config.symbol.data(), std::min(sizeof(msg.stock), config.symbol.size()));
 
             engine->inject_network_packet(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
 

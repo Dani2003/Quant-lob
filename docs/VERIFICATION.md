@@ -183,6 +183,8 @@ To ensure intellectual honesty and clear technical scope during evaluation:
    - The engine logs sequence gaps and formats MoldUDP64 TCP gap request packets.
    - However, in replay mode, missing sequence ranges are treated as stream discontinuities; automatic out-of-band gap recovery over TCP is not wired to a live retransmission server.
 5. **Paper Execution Assumptions**:
-   - Aggressive orders execute against displayed BBO volume in paper mode, capped by available depth.
+   - Aggressive orders execute against displayed BBO volume in paper mode, tracking consumed liquidity per price tick to prevent duplicate execution against the same displayed shares.
+   - Deeper book depletion, passive queue positioning, and venue market-data transit latencies are not simulated in this simplified paper execution loop.
    - Exchange transaction fees and rebates are excluded from the paper PnL accounting (modeled at 0.0 bps).
    - The Python backtest is a synthetic demonstration tool for parameter sensitivity, not proof of financial profitability or live alpha edge.
+

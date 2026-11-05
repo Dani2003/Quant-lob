@@ -325,9 +325,18 @@ void PipelinedTradingEngine::execution_thread_loop() {
                     oms_.on_order_accepted(token, token + 100000);
 
                     if (intent.action == StrategyOrderIntent::Action::AggressiveTakeBuy) {
-                        // Bounded fill: cap by displayed ask depth volume
-                        const uint32_t fill_qty = std::min(intent.qty, intent.best_ask_vol);
+                        // Bounded fill: consume displayed ask liquidity at this price level
+                        uint32_t avail = intent.best_ask_vol;
+                        if (intent.bid_price == last_consumed_ask_price_) {
+                            avail = (intent.best_ask_vol > consumed_ask_vol_) ? (intent.best_ask_vol - consumed_ask_vol_) : 0;
+                        } else {
+                            last_consumed_ask_price_ = intent.bid_price;
+                            consumed_ask_vol_ = 0;
+                            avail = intent.best_ask_vol;
+                        }
+                        const uint32_t fill_qty = std::min(intent.qty, avail);
                         if (fill_qty > 0) {
+                            consumed_ask_vol_ += fill_qty;
                             oms_.on_order_executed(token, fill_qty, intent.bid_price, risk_engine_);
                         }
                         if (fill_qty < intent.qty) {
@@ -361,9 +370,18 @@ void PipelinedTradingEngine::execution_thread_loop() {
                     oms_.on_order_accepted(token, token + 100000);
 
                     if (intent.action == StrategyOrderIntent::Action::AggressiveTakeSell) {
-                        // Bounded fill: cap by displayed bid depth volume
-                        const uint32_t fill_qty = std::min(intent.qty, intent.best_bid_vol);
+                        // Bounded fill: consume displayed bid liquidity at this price level
+                        uint32_t avail = intent.best_bid_vol;
+                        if (intent.ask_price == last_consumed_bid_price_) {
+                            avail = (intent.best_bid_vol > consumed_bid_vol_) ? (intent.best_bid_vol - consumed_bid_vol_) : 0;
+                        } else {
+                            last_consumed_bid_price_ = intent.ask_price;
+                            consumed_bid_vol_ = 0;
+                            avail = intent.best_bid_vol;
+                        }
+                        const uint32_t fill_qty = std::min(intent.qty, avail);
                         if (fill_qty > 0) {
+                            consumed_bid_vol_ += fill_qty;
                             oms_.on_order_executed(token, fill_qty, intent.ask_price, risk_engine_);
                         }
                         if (fill_qty < intent.qty) {
@@ -472,28 +490,37 @@ void PipelinedTradingEngine::print_status_dashboard() const {
     const auto* shm = telemetry_mgr_.get();
     if (!shm) return;
 
+    const auto bid = book_->get_best_bid();
+    const auto ask = book_->get_best_ask();
+    const uint32_t bid_px = bid.has_value() ? bid->price : shm->best_bid_price;
+    const uint32_t bid_sz = bid.has_value() ? bid->total_volume : shm->best_bid_volume;
+    const uint32_t ask_px = ask.has_value() ? ask->price : shm->best_ask_price;
+    const uint32_t ask_sz = ask.has_value() ? ask->total_volume : shm->best_ask_volume;
+    const uint32_t spread = (ask_px > bid_px && bid_px > 0) ? (ask_px - bid_px) : 0;
+    const double mid = (bid_px > 0 && ask_px > 0) ? ((bid_px + ask_px) / 2.0) : 0.0;
+
     std::cout << "\n==========================================================\n";
     std::cout << "      QUANT-LOB: PAPER REPLAY & EXECUTION TELEMETRY       \n";
     std::cout << "==========================================================\n";
     std::cout << "Symbol                     : " << config_.symbol << "\n";
-    std::cout << "Messages Ingested          : " << shm->messages_ingested << "\n";
-    std::cout << "Add Messages Processed     : " << shm->orders_matched << "\n";
-    std::cout << "Market Executions          : " << shm->trades_executed << "\n";
-    std::cout << "Market Volume              : " << shm->volume_traded << " shares\n";
+    std::cout << "Messages Ingested          : " << messages_ingested_.load(std::memory_order_relaxed) << "\n";
+    std::cout << "Add Messages Processed     : " << orders_matched_.load(std::memory_order_relaxed) << "\n";
+    std::cout << "Market Executions          : " << trades_executed_.load(std::memory_order_relaxed) << "\n";
+    std::cout << "Market Volume              : " << volume_traded_.load(std::memory_order_relaxed) << " shares\n";
     std::cout << "----------------------------------------------------------\n";
-    std::cout << "Best Bid                   : $" << std::fixed << std::setprecision(2) << (shm->best_bid_price / 100.0) 
-              << " (" << shm->best_bid_volume << ")\n";
-    std::cout << "Best Ask                   : $" << std::fixed << std::setprecision(2) << (shm->best_ask_price / 100.0) 
-              << " (" << shm->best_ask_volume << ")\n";
-    std::cout << "Spread                     : " << shm->spread_ticks << " ticks\n";
-    std::cout << "Mid-Price                  : $" << std::fixed << std::setprecision(2) << (shm->mid_price / 100.0) << "\n";
+    std::cout << "Best Bid                   : $" << std::fixed << std::setprecision(2) << (bid_px / 100.0) 
+              << " (" << bid_sz << ")\n";
+    std::cout << "Best Ask                   : $" << std::fixed << std::setprecision(2) << (ask_px / 100.0) 
+              << " (" << ask_sz << ")\n";
+    std::cout << "Spread                     : " << spread << " ticks\n";
+    std::cout << "Mid-Price                  : $" << std::fixed << std::setprecision(2) << (mid / 100.0) << "\n";
     std::cout << "----------------------------------------------------------\n";
     std::cout << "Current Net Position       : " << (shm->net_inventory > 0 ? "+" : "") << shm->net_inventory << " shares\n";
     std::cout << "Realized PnL               : $" << std::fixed << std::setprecision(2) << (shm->realized_pnl_cents / 100.0) << "\n";
     std::cout << "Unrealized PnL             : $" << std::fixed << std::setprecision(2) << (shm->unrealized_pnl_cents / 100.0) << "\n";
     std::cout << "Total Session PnL          : $" << std::fixed << std::setprecision(2) << (shm->total_pnl_cents / 100.0) << "\n";
     std::cout << "Risk Rejections            : " << shm->risk_rejections << "\n";
-    std::cout << "Paper Execution Model      : Bounded fills (capped by depth) | Fees: Excluded (0.0 bps)\n";
+    std::cout << "Paper Execution Model      : Bounded fills (depth-consumed) | Fees: Excluded (0.0 bps)\n";
     std::cout << "Active Paper Orders        : 0 resting (All quotes flushed cleanly)\n";
     std::cout << "Emergency Kill Switch      : " << (shm->kill_switch_active ? "TRIGGERED [HALTED]" : "ACTIVE [NORMAL]") << "\n";
     std::cout << "==========================================================\n\n";
