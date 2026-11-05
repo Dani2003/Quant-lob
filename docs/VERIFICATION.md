@@ -82,8 +82,12 @@ Run command:
   -> OMS Hash Collision Probing & Tombstones PASSED.
 [TEST] Running Paper Depth Ledger Alternation, Replenishment & Partial Fills...
   -> Paper Depth Ledger Alternation, Replenishment & Partial Fills PASSED.
+[TEST] Running Paper Depth Ledger Collisions & Capacity Exhaustion...
+  -> Paper Depth Ledger Collisions & Capacity Exhaustion PASSED.
 [TEST] Running Engine Shutdown & Quiescent Dashboard Reporting...
   -> Engine Shutdown & Quiescent Dashboard Reporting PASSED.
+[TEST] Running Concurrent Dashboard Snapshot & Workers Joined State...
+  -> Concurrent Dashboard Snapshot & Workers Joined State PASSED.
 ==========================================================
    ALL RISK & EXECUTION INVARIANTS PASSED SUCCESSFULLY!  
 ==========================================================
@@ -188,7 +192,9 @@ To ensure intellectual honesty and clear technical scope during evaluation:
    - However, in replay mode, missing sequence ranges are treated as stream discontinuities; automatic out-of-band gap recovery over TCP is not wired to a live retransmission server.
 5. **Paper Execution Assumptions**:
    - Aggressive orders execute against displayed BBO volume in paper mode, tracking consumed liquidity across price levels via a dedicated cache (`PaperDepthLedger`) to prevent duplicate execution across alternating prices and accurately reflect market replenishment and cancellations.
+   - The depth ledger fails closed on capacity/probe budget exhaustion, refusing to execute untracked aggressive orders rather than silently evicting existing consumed levels.
    - Deeper multi-level queue depletion, passive queue positioning, and venue market-data transit latencies are not simulated in this simplified paper execution loop.
+   - Concurrent telemetry reads use lock-free seqlock verification; direct order book inspection is strictly isolated until all worker threads have finished joining.
    - Exchange transaction fees and rebates are excluded from the paper PnL accounting (modeled at 0.0 bps).
    - The Python backtest is a synthetic demonstration tool for parameter sensitivity, not proof of financial profitability or live alpha edge.
 

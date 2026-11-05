@@ -48,7 +48,8 @@ PipelinedTradingEngine::~PipelinedTradingEngine() {
 }
 
 void PipelinedTradingEngine::start() {
-    if (running_.exchange(true)) return;
+    if (running_.exchange(true, std::memory_order_acq_rel)) return;
+    workers_joined_.store(false, std::memory_order_release);
     matching_done_.store(false, std::memory_order_relaxed);
     strategy_done_.store(false, std::memory_order_relaxed);
 
@@ -58,11 +59,19 @@ void PipelinedTradingEngine::start() {
 }
 
 void PipelinedTradingEngine::stop() {
-    if (!running_.exchange(false)) return;
+    if (!running_.exchange(false, std::memory_order_acq_rel)) {
+        if (matching_thread_.joinable()) matching_thread_.join();
+        if (strategy_thread_.joinable()) strategy_thread_.join();
+        if (execution_thread_.joinable()) execution_thread_.join();
+        workers_joined_.store(true, std::memory_order_release);
+        return;
+    }
 
     if (matching_thread_.joinable()) matching_thread_.join();
     if (strategy_thread_.joinable()) strategy_thread_.join();
     if (execution_thread_.joinable()) execution_thread_.join();
+
+    workers_joined_.store(true, std::memory_order_release);
 }
 
 bool PipelinedTradingEngine::inject_network_packet(const uint8_t* buffer, size_t length, uint64_t timestamp_ns) {
@@ -468,19 +477,49 @@ void PipelinedTradingEngine::execution_thread_loop() {
     }
 }
 
-void PipelinedTradingEngine::print_status_dashboard() const {
+bool PipelinedTradingEngine::read_telemetry_snapshot(ShmTelemetryBlock& out) const noexcept {
     const auto* shm = telemetry_mgr_.get();
-    if (!shm) return;
+    if (!shm) return false;
 
-    uint32_t bid_px = shm->best_bid_price;
-    uint32_t bid_sz = shm->best_bid_volume;
-    uint32_t ask_px = shm->best_ask_price;
-    uint32_t ask_sz = shm->best_ask_volume;
-    uint32_t spread = shm->spread_ticks;
-    double mid = shm->mid_price;
+    // If all workers are joined, no thread is writing to shm; read directly
+    if (workers_joined_.load(std::memory_order_acquire)) {
+        std::memcpy(&out, shm, sizeof(ShmTelemetryBlock));
+        return true;
+    }
 
-    // When worker threads are fully stopped and joined, safely sample final book depth without thread races
-    if (!running_.load(std::memory_order_acquire)) {
+    // Concurrent read during execution: validate consistent seqlock version
+    for (size_t retry = 0; retry < 100; ++retry) {
+        uint64_t seq0 = __atomic_load_n(&shm->sequence, __ATOMIC_ACQUIRE);
+        if (seq0 & 1) { // writer update in progress
+            CPU_PAUSE();
+            continue;
+        }
+        std::memcpy(&out, shm, sizeof(ShmTelemetryBlock));
+        uint64_t seq1 = __atomic_load_n(&shm->sequence, __ATOMIC_ACQUIRE);
+        if (seq0 == seq1) {
+            return true;
+        }
+        CPU_PAUSE();
+    }
+    return false;
+}
+
+void PipelinedTradingEngine::print_status_dashboard() const {
+    ShmTelemetryBlock snapshot{};
+    if (!read_telemetry_snapshot(snapshot)) {
+        std::cout << "\n[Dashboard] Telemetry unavailable (writer contested or uninitialized).\n";
+        return;
+    }
+
+    uint32_t bid_px = snapshot.best_bid_price;
+    uint32_t bid_sz = snapshot.best_bid_volume;
+    uint32_t ask_px = snapshot.best_ask_price;
+    uint32_t ask_sz = snapshot.best_ask_volume;
+    uint32_t spread = snapshot.spread_ticks;
+    double mid = snapshot.mid_price;
+
+    // Direct OrderBook inspection is ONLY permitted after all worker threads are joined
+    if (workers_joined_.load(std::memory_order_acquire)) {
         const auto bid = book_->get_best_bid();
         const auto ask = book_->get_best_ask();
         if (bid.has_value()) {
@@ -511,14 +550,14 @@ void PipelinedTradingEngine::print_status_dashboard() const {
     std::cout << "Spread                     : " << spread << " ticks\n";
     std::cout << "Mid-Price                  : $" << std::fixed << std::setprecision(2) << (mid / 100.0) << "\n";
     std::cout << "----------------------------------------------------------\n";
-    std::cout << "Current Net Position       : " << (shm->net_inventory > 0 ? "+" : "") << shm->net_inventory << " shares\n";
-    std::cout << "Realized PnL               : $" << std::fixed << std::setprecision(2) << (shm->realized_pnl_cents / 100.0) << "\n";
-    std::cout << "Unrealized PnL             : $" << std::fixed << std::setprecision(2) << (shm->unrealized_pnl_cents / 100.0) << "\n";
-    std::cout << "Total Session PnL          : $" << std::fixed << std::setprecision(2) << (shm->total_pnl_cents / 100.0) << "\n";
-    std::cout << "Risk Rejections            : " << shm->risk_rejections << "\n";
+    std::cout << "Current Net Position       : " << (snapshot.net_inventory > 0 ? "+" : "") << snapshot.net_inventory << " shares\n";
+    std::cout << "Realized PnL               : $" << std::fixed << std::setprecision(2) << (snapshot.realized_pnl_cents / 100.0) << "\n";
+    std::cout << "Unrealized PnL             : $" << std::fixed << std::setprecision(2) << (snapshot.unrealized_pnl_cents / 100.0) << "\n";
+    std::cout << "Total Session PnL          : $" << std::fixed << std::setprecision(2) << (snapshot.total_pnl_cents / 100.0) << "\n";
+    std::cout << "Risk Rejections            : " << snapshot.risk_rejections << "\n";
     std::cout << "Paper Execution Model      : Bounded fills (depth-consumed) | Fees: Excluded (0.0 bps)\n";
     std::cout << "Active Paper Orders        : 0 resting (All quotes flushed cleanly)\n";
-    std::cout << "Emergency Kill Switch      : " << (shm->kill_switch_active ? "TRIGGERED [HALTED]" : "ACTIVE [NORMAL]") << "\n";
+    std::cout << "Emergency Kill Switch      : " << (snapshot.kill_switch_active ? "TRIGGERED [HALTED]" : "ACTIVE [NORMAL]") << "\n";
     std::cout << "==========================================================\n\n";
 }
 

@@ -434,6 +434,104 @@ void test_engine_shutdown_and_quiescent_reporting() {
     std::cout << "  -> Engine Shutdown & Quiescent Dashboard Reporting PASSED.\n";
 }
 
+void test_paper_depth_ledger_collisions_and_capacity_exhaustion() {
+    std::cout << "[TEST] Running Paper Depth Ledger Collisions & Capacity Exhaustion...\n";
+
+    PaperDepthLedger ledger;
+
+    // 1. Generate prices that hash to the exact same index
+    // hash_price(p) = (p * 2654435761u) & PaperDepthLedger::MASK (255)
+    std::vector<uint32_t> colliding_prices;
+    const size_t target_hash = 42;
+    for (uint32_t p = 1; p < 100000 && colliding_prices.size() < PaperDepthLedger::MAX_PROBES; ++p) {
+        if (((static_cast<size_t>(p) * 2654435761u) & PaperDepthLedger::MASK) == target_hash) {
+            colliding_prices.push_back(p);
+        }
+    }
+    assert(colliding_prices.size() == PaperDepthLedger::MAX_PROBES);
+
+    // 2. Consume liquidity at each colliding price within the probe budget
+    for (size_t i = 0; i < colliding_prices.size(); ++i) {
+        uint32_t p = colliding_prices[i];
+        uint32_t qty = static_cast<uint32_t>(10 * (i + 1));
+        uint32_t fill = ledger.consume(p, 1000, qty);
+        assert(fill == qty);
+        assert(ledger.get_consumed(p) == qty);
+        (void)fill;
+    }
+
+    // Verify all colliding prices retained their individual consumed states without eviction
+    for (size_t i = 0; i < colliding_prices.size(); ++i) {
+        uint32_t p = colliding_prices[i];
+        uint32_t expected_qty = static_cast<uint32_t>(10 * (i + 1));
+        assert(ledger.get_consumed(p) == expected_qty);
+        (void)p;
+        (void)expected_qty;
+    }
+
+    // 3. Find one more price that hashes to the exact same saturated probe sequence
+    uint32_t overflow_price = 0;
+    for (uint32_t p = colliding_prices.back() + 1; p < 200000; ++p) {
+        if (((static_cast<size_t>(p) * 2654435761u) & PaperDepthLedger::MASK) == target_hash) {
+            overflow_price = p;
+            break;
+        }
+    }
+    assert(overflow_price != 0);
+
+    // 4. Probe exhaustion: must fail closed! Fill must be 0, and MUST NOT evict any existing entry!
+    uint32_t overflow_fill = ledger.consume(overflow_price, 500, 100);
+    assert(overflow_fill == 0 && "Exhausted ledger must fail closed and refuse untracked executions");
+    (void)overflow_fill;
+
+    // 5. Verify that none of the original entries were evicted or corrupted by the overflow attempt
+    for (size_t i = 0; i < colliding_prices.size(); ++i) {
+        uint32_t p = colliding_prices[i];
+        uint32_t expected_qty = static_cast<uint32_t>(10 * (i + 1));
+        assert(ledger.get_consumed(p) == expected_qty && "Overflow must never evict existing consumed state");
+        (void)p;
+        (void)expected_qty;
+    }
+
+    std::cout << "  -> Paper Depth Ledger Collisions & Capacity Exhaustion PASSED.\n";
+}
+
+void test_concurrent_dashboard_snapshot_and_workers_joined_state() {
+    std::cout << "[TEST] Running Concurrent Dashboard Snapshot & Workers Joined State...\n";
+
+    EngineConfig config{};
+    config.symbol = "AAPL";
+    config.enable_core_pinning = false;
+    config.enable_udp_streaming = false;
+
+    auto engine = std::make_unique<PipelinedTradingEngine>(config);
+    assert(engine->are_workers_joined() == true);
+
+    engine->start();
+    assert(engine->is_running() == true);
+    assert(engine->are_workers_joined() == false);
+
+    // 1. Verify seqlock snapshot read succeeds while engine is running
+    ShmTelemetryBlock snapshot{};
+    bool ok = engine->read_telemetry_snapshot(snapshot);
+    assert(ok && "Seqlock snapshot read must succeed while engine is running");
+    (void)ok;
+
+    // 2. Call print_status_dashboard() concurrently while engine is running
+    // This exercises the concurrent path: it must read the seqlock snapshot without touching OrderBook
+    engine->print_status_dashboard();
+
+    // 3. Stop the engine: workers join cleanly
+    engine->stop();
+    assert(engine->is_running() == false);
+    assert(engine->are_workers_joined() == true);
+
+    // 4. Verify post-stop quiescent dashboard call
+    engine->print_status_dashboard();
+
+    std::cout << "  -> Concurrent Dashboard Snapshot & Workers Joined State PASSED.\n";
+}
+
 int main() {
     std::cout << "==========================================================\n";
     std::cout << "   RUNNING PHASE 4 & 5: RISK & EXECUTION TEST SUITE       \n";
@@ -446,7 +544,9 @@ int main() {
     test_risk_reservations_and_limits();
     test_oms_hash_collision_probing();
     test_paper_depth_ledger_price_alternation_and_replenishment();
+    test_paper_depth_ledger_collisions_and_capacity_exhaustion();
     test_engine_shutdown_and_quiescent_reporting();
+    test_concurrent_dashboard_snapshot_and_workers_joined_state();
 
     std::cout << "==========================================================\n";
     std::cout << "   ALL RISK & EXECUTION INVARIANTS PASSED SUCCESSFULLY!  \n";

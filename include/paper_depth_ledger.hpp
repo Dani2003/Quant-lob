@@ -114,9 +114,12 @@ private:
             }
         }
 
-        // If not found, use first empty slot or replace at base slot
-        size_t target_slot = (empty_slot != CAPACITY) ? empty_slot : (idx & MASK);
-        auto& entry = entries_[target_slot];
+        // If not found and no empty slot was discovered within probe budget: fail closed!
+        if (empty_slot == CAPACITY) {
+            return nullptr; // Capacity / probe exhaustion: refuse to evict existing consumed state
+        }
+
+        auto& entry = entries_[empty_slot];
         entry.price = price;
         entry.consumed_vol = 0;
         entry.last_observed_vol = initial_vol;

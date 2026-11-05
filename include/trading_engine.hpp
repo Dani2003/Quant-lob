@@ -105,10 +105,14 @@ public:
     }
 
     [[nodiscard]] bool is_running() const noexcept { return running_.load(std::memory_order_relaxed); }
+    [[nodiscard]] bool are_workers_joined() const noexcept { return workers_joined_.load(std::memory_order_relaxed); }
     [[nodiscard]] const ShmTelemetryBlock* get_telemetry() const noexcept { return telemetry_mgr_.get(); }
     [[nodiscard]] ShmTelemetryBlock* get_telemetry() noexcept { return telemetry_mgr_.get(); }
     [[nodiscard]] const PaperDepthLedger& ask_depth_ledger() const noexcept { return ask_depth_ledger_; }
     [[nodiscard]] const PaperDepthLedger& bid_depth_ledger() const noexcept { return bid_depth_ledger_; }
+
+    /// Read a consistent telemetry snapshot using seqlock validation
+    bool read_telemetry_snapshot(ShmTelemetryBlock& out) const noexcept;
 
     void print_status_dashboard() const;
 
@@ -119,6 +123,7 @@ private:
 
     EngineConfig config_;
     alignas(64) std::atomic<bool> running_{false};
+    alignas(64) std::atomic<bool> workers_joined_{true};
     alignas(64) std::atomic<bool> matching_done_{true};
     alignas(64) std::atomic<bool> strategy_done_{true};
     uint64_t expected_mold_sequence_{0};
