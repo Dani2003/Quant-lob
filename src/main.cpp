@@ -459,6 +459,9 @@ void run_risk_and_execution_benchmark() {
                 ouch_wire_buffer, token, (side == 0 ? 'B' : 'S'), qty, "AAPL", price
             );
             (void)wire_bytes;
+            // Complete simulated paper lifecycle: simulate ack and execution
+            oms.on_order_accepted(token, token + 100000);
+            oms.on_order_executed(token, qty, price, risk);
         }
 
         const uint64_t t1 = TscClock::rdtsc();

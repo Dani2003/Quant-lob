@@ -306,34 +306,73 @@ void PipelinedTradingEngine::execution_thread_loop() {
             if (intent.action == StrategyOrderIntent::Action::QuoteBid || 
                 intent.action == StrategyOrderIntent::Action::AggressiveTakeBuy) 
             {
+                // Cancel previous resting bid quote so paper orders do not accumulate unboundedly
+                if (last_active_bid_token_ != 0) {
+                    oms_.on_order_canceled(last_active_bid_token_, config_.quote_lot_size, risk_engine_);
+                    last_active_bid_token_ = 0;
+                }
+
                 uint64_t token = token_generator_.fetch_add(1, std::memory_order_relaxed);
                 auto* ord = oms_.submit_order(token, 0, intent.bid_price, intent.qty, mid_ticks, risk_timestamp_ns, risk_engine_);
 
                 if (__builtin_expect(ord && ord->status == OrderStatus::PendingNew, 1)) {
+                    // Local OUCH wire formatting demonstration (no live outbound socket)
                     (void)OuchSerializer::serialize_enter_order(ouch_wire_buffer, token, 'B', intent.qty, config_.symbol, intent.bid_price);
                     oms_.on_order_accepted(token, token + 100000);
+
+                    if (intent.action == StrategyOrderIntent::Action::AggressiveTakeBuy) {
+                        // Simulated paper fill against crossed ask
+                        oms_.on_order_executed(token, intent.qty, intent.bid_price, risk_engine_);
+                    } else {
+                        last_active_bid_token_ = token;
+                    }
                 } else {
                     risk_rejections_.fetch_add(1, std::memory_order_relaxed);
                 }
             } else if (intent.action == StrategyOrderIntent::Action::QuoteAsk || 
                        intent.action == StrategyOrderIntent::Action::AggressiveTakeSell) 
             {
+                // Cancel previous resting ask quote so paper orders do not accumulate unboundedly
+                if (last_active_ask_token_ != 0) {
+                    oms_.on_order_canceled(last_active_ask_token_, config_.quote_lot_size, risk_engine_);
+                    last_active_ask_token_ = 0;
+                }
+
                 uint64_t token = token_generator_.fetch_add(1, std::memory_order_relaxed);
                 auto* ord = oms_.submit_order(token, 1, intent.ask_price, intent.qty, mid_ticks, risk_timestamp_ns, risk_engine_);
 
                 if (__builtin_expect(ord && ord->status == OrderStatus::PendingNew, 1)) {
+                    // Local OUCH wire formatting demonstration (no live outbound socket)
                     (void)OuchSerializer::serialize_enter_order(ouch_wire_buffer, token, 'S', intent.qty, config_.symbol, intent.ask_price);
                     oms_.on_order_accepted(token, token + 100000);
+
+                    if (intent.action == StrategyOrderIntent::Action::AggressiveTakeSell) {
+                        // Simulated paper fill against crossed bid
+                        oms_.on_order_executed(token, intent.qty, intent.ask_price, risk_engine_);
+                    } else {
+                        last_active_ask_token_ = token;
+                    }
                 } else {
                     risk_rejections_.fetch_add(1, std::memory_order_relaxed);
                 }
             } else if (intent.action == StrategyOrderIntent::Action::QuoteTwoSided) {
+                // Cancel previous two-sided quotes
+                if (last_active_bid_token_ != 0) {
+                    oms_.on_order_canceled(last_active_bid_token_, config_.quote_lot_size, risk_engine_);
+                    last_active_bid_token_ = 0;
+                }
+                if (last_active_ask_token_ != 0) {
+                    oms_.on_order_canceled(last_active_ask_token_, config_.quote_lot_size, risk_engine_);
+                    last_active_ask_token_ = 0;
+                }
+
                 // Bid leg
                 uint64_t b_token = token_generator_.fetch_add(1, std::memory_order_relaxed);
                 auto* b_ord = oms_.submit_order(b_token, 0, intent.bid_price, intent.qty, mid_ticks, risk_timestamp_ns, risk_engine_);
                 if (b_ord && b_ord->status == OrderStatus::PendingNew) {
                     (void)OuchSerializer::serialize_enter_order(ouch_wire_buffer, b_token, 'B', intent.qty, config_.symbol, intent.bid_price);
                     oms_.on_order_accepted(b_token, b_token + 100000);
+                    last_active_bid_token_ = b_token;
                 }
 
                 // Ask leg
@@ -342,6 +381,7 @@ void PipelinedTradingEngine::execution_thread_loop() {
                 if (a_ord && a_ord->status == OrderStatus::PendingNew) {
                     (void)OuchSerializer::serialize_enter_order(ouch_wire_buffer, a_token, 'S', intent.qty, config_.symbol, intent.ask_price);
                     oms_.on_order_accepted(a_token, a_token + 100000);
+                    last_active_ask_token_ = a_token;
                 }
             }
 

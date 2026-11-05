@@ -83,21 +83,36 @@ public:
         uint64_t timestamp_ns,
         RiskEngine& risk_engine) 
     {
-        if (order_token == 0 || side > 1 || price == 0 || qty == 0 || find_order(order_token)) return nullptr;
-        size_t idx = MaxOrders;
+        if (order_token == 0 || side > 1 || price == 0 || qty == 0) return nullptr;
+
+        size_t available_idx = MaxOrders;
         const size_t start = hash_token(order_token);
-        for (size_t probe = 0; probe < MaxOrders; ++probe) {
+        static constexpr size_t MAX_PROBES = (MaxOrders < 64) ? MaxOrders : 64;
+
+        for (size_t probe = 0; probe < MAX_PROBES; ++probe) {
             const size_t candidate = (start + probe) & IndexMask;
-            const OrderStatus status = orders_[candidate].status;
-            if (status == OrderStatus::Empty || status == OrderStatus::Filled ||
-                status == OrderStatus::Canceled || status == OrderStatus::Rejected ||
-                status == OrderStatus::RiskRejected) {
-                idx = candidate;
+            TrackedOrder& slot = orders_[candidate];
+
+            if (slot.status == OrderStatus::Empty) {
+                if (available_idx == MaxOrders) available_idx = candidate;
                 break;
             }
+
+            if (slot.order_token == order_token) {
+                return nullptr; // Duplicate token
+            }
+
+            if (available_idx == MaxOrders &&
+                (slot.status == OrderStatus::Filled ||
+                 slot.status == OrderStatus::Canceled ||
+                 slot.status == OrderStatus::Rejected ||
+                 slot.status == OrderStatus::RiskRejected)) {
+                available_idx = candidate; // Reusable tombstone
+            }
         }
-        if (idx == MaxOrders) return nullptr;
-        TrackedOrder& order = orders_[idx];
+
+        if (available_idx == MaxOrders) return nullptr;
+        TrackedOrder& order = orders_[available_idx];
         order.order_token = order_token;
         order.exchange_ref = 0;
         order.side = side;
@@ -196,8 +211,10 @@ public:
     }
 
     [[nodiscard]] inline TrackedOrder* find_order(uint64_t order_token) noexcept {
+        if (order_token == 0) return nullptr;
         const size_t start = hash_token(order_token);
-        for (size_t probe = 0; probe < MaxOrders; ++probe) {
+        static constexpr size_t MAX_PROBES = (MaxOrders < 64) ? MaxOrders : 64;
+        for (size_t probe = 0; probe < MAX_PROBES; ++probe) {
             TrackedOrder& order = orders_[(start + probe) & IndexMask];
             if (order.status == OrderStatus::Empty) return nullptr;
             if (order.order_token == order_token) return &order;

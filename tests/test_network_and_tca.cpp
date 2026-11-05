@@ -142,6 +142,40 @@ void test_tca_engine() {
     std::cout << "  -> TCA & Adverse Selection Invariants PASSED.\n";
 }
 
+void test_mold_udp64_malformed_framing_rejection() {
+    std::cout << "[TEST] Running MoldUDP64 Framing Rejection & Corrupted Wire Tests...\n";
+
+    OrderBook book;
+    FeedHandler feed(book);
+    MoldUdp64Parser<64> parser(feed);
+
+    // 1. Truncated datagram: fewer bytes than MoldUdp64Header (20 bytes)
+    uint8_t short_buf[16]{0};
+    size_t processed = parser.process_datagram(short_buf, sizeof(short_buf), 100);
+    assert(processed == 0 && "Truncated header must be rejected immediately.");
+
+    // 2. Corrupted message length exceeding packet boundary
+    uint8_t corrupt_buf[64]{0};
+    auto* hdr = reinterpret_cast<MoldUdp64Header*>(corrupt_buf);
+    std::memcpy(hdr->session, "TEST000001", 10);
+    hdr->sequence_number = to_big_endian64(1);
+    hdr->message_count = to_big_endian16(1);
+
+    // Message length claims to be 100 bytes, but datagram is only 30 bytes
+    *reinterpret_cast<uint16_t*>(corrupt_buf + sizeof(MoldUdp64Header)) = to_big_endian16(100);
+    processed = parser.process_datagram(corrupt_buf, 30, 200);
+    assert(processed == 0 && "Corrupted payload length must be cleanly rejected.");
+
+    // 3. End of Session signal: message_count == 0xFFFF
+    hdr->sequence_number = to_big_endian64(1);
+    hdr->message_count = to_big_endian16(0xFFFF);
+    processed = parser.process_datagram(corrupt_buf, sizeof(MoldUdp64Header), 300);
+    assert(processed == 0);
+    assert(parser.is_session_ended() && "0xFFFF must trigger End of Session.");
+
+    std::cout << "  -> MoldUDP64 Framing Rejection Tests PASSED.\n";
+}
+
 int main() {
     std::cout << "==========================================================\n";
     std::cout << "   RUNNING PHASE 7 & 8: MOLDUDP64 & TCA TEST SUITE        \n";
@@ -149,6 +183,7 @@ int main() {
 
     test_mold_udp64_parser();
     test_tca_engine();
+    test_mold_udp64_malformed_framing_rejection();
 
     std::cout << "==========================================================\n";
     std::cout << "   ALL MOLDUDP64 & TCA INVARIANTS PASSED SUCCESSFULLY!    \n";

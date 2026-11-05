@@ -1,8 +1,11 @@
 #include <cassert>
 #include <iostream>
 #include <memory>
+#include <vector>
 
 #include "order_book.hpp"
+#include "feed_handler.hpp"
+#include "ouch_messages.hpp"
 
 using namespace lob;
 
@@ -108,6 +111,124 @@ void test_cancellation_invariance() {
     std::cout << "PASSED [OK]\n";
 }
 
+void test_order_book_reduce_execute_replace() {
+    std::cout << "[Test 5] Verifying Reduce, Execute & Replace Invariants... ";
+    auto book = std::make_unique<OrderBook>();
+
+    // 1. Add Buy Order 1: 100 shares @ $100.00 (10000 ticks)
+    bool ok = book->add_limit_order(1, 10, Side::Buy, 10000, 100);
+    assert(ok);
+    assert(book->get_best_bid().has_value() && book->get_best_bid()->price == 10000);
+    assert(book->get_best_bid()->total_volume == 100);
+
+    // 2. Reduce Order 1 by 40 shares -> 60 shares remaining
+    ok = book->reduce_order(1, 40);
+    assert(ok);
+    assert(book->get_best_bid()->total_volume == 60);
+
+    // 3. Execute Order 1 for 35 shares -> 25 shares remaining
+    uint64_t trade_vol = 0;
+    book->set_trade_callback([](const Trade& trade, void* user_data) {
+        *static_cast<uint64_t*>(user_data) += trade.quantity;
+    }, &trade_vol);
+
+    ok = book->execute_order(1, 35, 9001, 12345);
+    assert(ok);
+    assert(trade_vol == 35);
+    assert(book->get_best_bid()->total_volume == 25);
+
+    // 4. Replace Order 1 with Order 2 @ $100.05 (10005 ticks) for 80 shares
+    ok = book->replace_order(1, 2, 10005, 80, 12346);
+    assert(ok);
+    assert(book->get_best_bid()->price == 10005);
+    assert(book->get_best_bid()->total_volume == 80);
+    assert(book->get_resting_order_count() == 1);
+
+    // 5. Verify reducing more than remaining cancels the order
+    ok = book->reduce_order(2, 80);
+    assert(ok);
+    assert(!book->get_best_bid().has_value());
+    assert(book->get_resting_order_count() == 0);
+
+    std::cout << "PASSED [OK]\n";
+}
+
+void test_itch_feed_handler_lifecycle() {
+    std::cout << "[Test 6] Verifying ITCH Wire Parsing (Add, Exec, Cancel, Replace, Delete)... ";
+    OrderBook book;
+    FeedHandler handler(book);
+
+    // 1. ITCH Add Order 'A': Buy 100 shares of AAPL @ $150.00 (1500000)
+    itch::AddOrderMsg add_msg{};
+    add_msg.length = to_big_endian16(36);
+    add_msg.message_type = 'A';
+    add_msg.stock_locate = to_big_endian16(1);
+    add_msg.tracking_number = 0;
+    add_msg.order_ref_num = to_big_endian64(5001);
+    add_msg.buy_sell_indicator = 'B';
+    add_msg.shares = to_big_endian32(100);
+    std::memcpy(add_msg.stock, "AAPL    ", 8);
+    add_msg.price = to_big_endian32(1500000); // 15000 ticks
+
+    size_t consumed = handler.process_packet(reinterpret_cast<const uint8_t*>(&add_msg), sizeof(add_msg));
+    assert(consumed == sizeof(add_msg));
+    assert(book.get_best_bid().has_value() && book.get_best_bid()->price == 15000);
+    assert(book.get_best_bid()->total_volume == 100);
+
+    // 2. ITCH Order Cancel 'X': Reduce by 30 shares
+    itch::OrderCancelMsg cancel_msg{};
+    cancel_msg.length = to_big_endian16(sizeof(itch::OrderCancelMsg) - 2);
+    cancel_msg.message_type = 'X';
+    cancel_msg.stock_locate = to_big_endian16(1);
+    cancel_msg.order_ref_num = to_big_endian64(5001);
+    cancel_msg.canceled_shares = to_big_endian32(30);
+
+    consumed = handler.process_packet(reinterpret_cast<const uint8_t*>(&cancel_msg), sizeof(cancel_msg));
+    assert(consumed == sizeof(cancel_msg));
+    assert(book.get_best_bid()->total_volume == 70);
+
+    // 3. ITCH Order Executed 'E': Fill 40 shares
+    itch::OrderExecutedMsg exec_msg{};
+    exec_msg.length = to_big_endian16(sizeof(itch::OrderExecutedMsg) - 2);
+    exec_msg.message_type = 'E';
+    exec_msg.stock_locate = to_big_endian16(1);
+    exec_msg.order_ref_num = to_big_endian64(5001);
+    exec_msg.executed_shares = to_big_endian32(40);
+    exec_msg.match_number = to_big_endian64(777);
+
+    consumed = handler.process_packet(reinterpret_cast<const uint8_t*>(&exec_msg), sizeof(exec_msg));
+    assert(consumed == sizeof(exec_msg));
+    assert(book.get_best_bid()->total_volume == 30);
+
+    // 4. ITCH Order Replace 'U': Replace remaining 30 with order 5002 for 150 shares @ $150.10
+    itch::OrderReplaceMsg replace_msg{};
+    replace_msg.length = to_big_endian16(sizeof(itch::OrderReplaceMsg) - 2);
+    replace_msg.message_type = 'U';
+    replace_msg.stock_locate = to_big_endian16(1);
+    replace_msg.original_order_ref_num = to_big_endian64(5001);
+    replace_msg.new_order_ref_num = to_big_endian64(5002);
+    replace_msg.shares = to_big_endian32(150);
+    replace_msg.price = to_big_endian32(1501000); // 15010 ticks
+
+    consumed = handler.process_packet(reinterpret_cast<const uint8_t*>(&replace_msg), sizeof(replace_msg));
+    assert(consumed == sizeof(replace_msg));
+    assert(book.get_best_bid()->price == 15010);
+    assert(book.get_best_bid()->total_volume == 150);
+
+    // 5. ITCH Order Delete 'D': Delete order 5002
+    itch::OrderDeleteMsg del_msg{};
+    del_msg.length = to_big_endian16(sizeof(itch::OrderDeleteMsg) - 2);
+    del_msg.message_type = 'D';
+    del_msg.stock_locate = to_big_endian16(1);
+    del_msg.order_ref_num = to_big_endian64(5002);
+
+    consumed = handler.process_packet(reinterpret_cast<const uint8_t*>(&del_msg), sizeof(del_msg));
+    assert(consumed == sizeof(del_msg));
+    assert(!book.get_best_bid().has_value());
+
+    std::cout << "PASSED [OK]\n";
+}
+
 int main() {
     std::cout << "==========================================================\n";
     std::cout << "  QUANT-LOB: CORE INVARIANT UNIT TEST SUITE               \n";
@@ -117,9 +238,11 @@ int main() {
     test_partial_fill_and_queue_position();
     test_multi_level_market_sweep();
     test_cancellation_invariance();
+    test_order_book_reduce_execute_replace();
+    test_itch_feed_handler_lifecycle();
 
     std::cout << "==========================================================\n";
-    std::cout << "  ALL 4 CORE INVARIANT TESTS PASSED SUCCESSFULLY!         \n";
+    std::cout << "  ALL 6 CORE INVARIANT TESTS PASSED SUCCESSFULLY!         \n";
     std::cout << "==========================================================\n";
     return 0;
 }

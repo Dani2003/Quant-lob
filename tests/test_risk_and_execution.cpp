@@ -192,7 +192,100 @@ void test_order_state_machine() {
     (void)ok;
 
     std::cout << "  -> Order State Machine Lifecycle Invariants PASSED.\n";
+}
 
+void test_risk_reservations_and_limits() {
+    std::cout << "[TEST] Running In-Flight Risk Reservations & Pending Limit Checks...\n";
+
+    RiskConfig config;
+    config.max_order_qty = 2000;
+    config.max_order_notional = 500'000'00;
+    config.max_net_position = 1500; // Hard max net position 1500 shares
+    config.price_collar_ticks = 50;
+
+    RiskEngine risk(config);
+    uint64_t t = 1'000'000'000ULL;
+
+    // 1. Initial state: Position 0, Pending Buys 0, Pending Sells 0
+    assert(risk.current_position() == 0);
+
+    // 2. First order: Buy 1000 shares @ $100.00
+    auto res = risk.check_order(0, 100'00, 1000, 100'00, t);
+    assert(res == RiskCheckResult::Approved);
+    // Reserve the in-flight buy order
+    risk.reserve_order(0, 1000);
+
+    // 3. Second order arrives before Order 1 fills: Buy 800 shares @ $100.00
+    // Current filled = 0, but pending buys = 1000. Total potential = 1800 > 1500!
+    // Must be rejected by risk engine even though filled position is 0!
+    res = risk.check_order(0, 100'00, 800, 100'00, t);
+    assert(res == RiskCheckResult::PositionLimitBreached);
+
+    // 4. However, a Sell order of 500 shares should still be approved (hedges risk)
+    res = risk.check_order(1, 100'00, 500, 100'00, t);
+    assert(res == RiskCheckResult::Approved);
+
+    // 5. Order 1 is canceled by exchange: release reservation
+    risk.release_order(0, 1000);
+
+    // 6. Now the 800 share buy order should be approved
+    res = risk.check_order(0, 100'00, 800, 100'00, t);
+    assert(res == RiskCheckResult::Approved);
+    risk.reserve_order(0, 800);
+
+    // 7. Order fills for 800 shares: release reservation and record fill
+    risk.release_order(0, 800);
+    risk.on_fill(0, 100'00, 800);
+    assert(risk.current_position() == 800);
+
+    std::cout << "  -> Risk Reservations & In-Flight Checks PASSED.\n";
+}
+
+void test_oms_hash_collision_probing() {
+    std::cout << "[TEST] Running OMS Open-Addressing Collision Probing & Tombstones...\n";
+
+    OrderStateMachine<64> oms; // Small capacity 64 to force wrap-around & probing
+    RiskEngine risk;
+    uint64_t t = 1'000'000ULL;
+
+    // Pick two tokens that hash to the exact same index:
+    // hash_token(k) = (k * 11400714819323198485ULL) & 63
+    uint64_t token_a = 1;
+    size_t hash_a = (token_a * 11400714819323198485ULL) & 63;
+    uint64_t token_b = 0;
+    for (uint64_t k = 2; k < 10000; ++k) {
+        if (((k * 11400714819323198485ULL) & 63) == hash_a) {
+            token_b = k;
+            break;
+        }
+    }
+    assert(token_b != 0);
+
+    // Submit token A
+    auto* ord_a = oms.submit_order(token_a, 0, 100'00, 100, 100'00, t, risk);
+    assert(ord_a != nullptr && ord_a->order_token == token_a);
+
+    // Submit colliding token B -> must probe to next slot without overwriting token A
+    auto* ord_b = oms.submit_order(token_b, 1, 100'10, 100, 100'00, t, risk);
+    assert(ord_b != nullptr && ord_b->order_token == token_b);
+    assert(ord_a != ord_b);
+
+    // Verify both orders can be independently found
+    auto* found_a = oms.find_order(token_a);
+    auto* found_b = oms.find_order(token_b);
+    assert(found_a == ord_a && found_a->order_token == token_a);
+    assert(found_b == ord_b && found_b->order_token == token_b);
+
+    // Cancel token A -> becomes tombstone
+    oms.on_order_accepted(token_a, 10001);
+    oms.on_order_canceled(token_a, 100, risk);
+    assert(ord_a->status == OrderStatus::Canceled);
+
+    // Finding token B must STILL work across the tombstone!
+    found_b = oms.find_order(token_b);
+    assert(found_b == ord_b && found_b->order_token == token_b);
+
+    std::cout << "  -> OMS Hash Collision Probing & Tombstones PASSED.\n";
 }
 
 int main() {
@@ -204,6 +297,8 @@ int main() {
     test_pnl_and_inventory_accounting();
     test_ouch_wire_serialization();
     test_order_state_machine();
+    test_risk_reservations_and_limits();
+    test_oms_hash_collision_probing();
 
     std::cout << "==========================================================\n";
     std::cout << "   ALL RISK & EXECUTION INVARIANTS PASSED SUCCESSFULLY!  \n";
