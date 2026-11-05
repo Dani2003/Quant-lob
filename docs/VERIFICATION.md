@@ -84,8 +84,8 @@ Run command:
   -> Paper Depth Ledger Alternation, Replenishment & Partial Fills PASSED.
 [TEST] Running Paper Depth Ledger Collisions & Capacity Exhaustion...
   -> Paper Depth Ledger Collisions & Capacity Exhaustion PASSED.
-[TEST] Running Wait-Free Triple Buffer Multithreaded Concurrency...
-  -> Wait-Free Triple Buffer Multithreaded Concurrency PASSED.
+[TEST] Running Snapshot Triple Buffer Multithreaded Concurrency...
+  -> Snapshot Triple Buffer Multithreaded Concurrency PASSED.
 [TEST] Running Engine Shutdown & Quiescent Dashboard Reporting...
   -> Engine Shutdown & Quiescent Dashboard Reporting PASSED.
 [TEST] Running Concurrent Dashboard Snapshot & Workers Joined State...
@@ -196,7 +196,7 @@ To ensure intellectual honesty and clear technical scope during evaluation:
    - Aggressive orders execute against displayed BBO volume in paper mode, tracking consumed liquidity across price levels via a dedicated cache (`PaperDepthLedger`) to prevent duplicate execution across alternating prices and accurately reflect market replenishment and cancellations.
    - The depth ledger fails closed on capacity/probe budget exhaustion, refusing to execute untracked aggressive orders rather than silently evicting existing consumed levels.
    - Deeper multi-level queue depletion, passive queue positioning, and venue market-data transit latencies are not simulated in this simplified paper execution loop.
-   - Live telemetry snapshots are published via an asynchronous wait-free triple buffer (`WaitFreeTripleBuffer`), guaranteeing writer and reader never access the same buffer slot and eliminating C++ data races on non-atomic fields under concurrent load. Direct OrderBook inspection is strictly isolated until all worker threads have finished joining.
+   - Live telemetry snapshots are published via an asynchronous 3-slot buffer (`SnapshotTripleBuffer`) with a wait-free single-writer path and mutex-serialized reader reads, guaranteeing writer and reader never access the same buffer slot and eliminating C++ data races on non-atomic fields under concurrent load. Direct OrderBook inspection is strictly isolated until all worker threads have finished joining.
    - Exchange transaction fees and rebates are excluded from the paper PnL accounting (modeled at 0.0 bps).
    - The Python backtest is a synthetic demonstration tool for parameter sensitivity, not proof of financial profitability or live alpha edge.
 

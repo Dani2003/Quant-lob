@@ -483,10 +483,13 @@ void PipelinedTradingEngine::execution_thread_loop() {
 
     auto* final_shm = telemetry_mgr_.get();
     if (final_shm) {
+        std::atomic_ref<uint64_t> sequence(final_shm->sequence);
+        sequence.fetch_add(1, std::memory_order_acq_rel);
         final_shm->net_inventory = risk_engine_.current_position();
         final_shm->realized_pnl_cents = risk_engine_.realized_pnl();
         final_shm->unrealized_pnl_cents = risk_engine_.unrealized_pnl();
         final_shm->total_pnl_cents = risk_engine_.total_pnl();
+        sequence.fetch_add(1, std::memory_order_release);
         snapshot_buffer_.publish(*final_shm);
     }
 }

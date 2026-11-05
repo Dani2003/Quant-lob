@@ -8,28 +8,29 @@
 namespace lob {
 
 /**
- * @brief Wait-Free Triple Buffer for lock-free publishing of immutable telemetry snapshots.
+ * @brief Asynchronous 3-slot snapshot buffer for publishing telemetry snapshots.
  *
  * Implements Lamport's 3-slot asynchronous buffer algorithm:
- * - Single Writer is completely wait-free: writes to private write_slot, then atomically
- *   swaps with clean_slot. Zero mutexes, zero spinlocks, zero heap allocation.
- * - Readers exchange read_slot with clean_slot and read an immutable snapshot.
- * - Guaranteed: write_slot != read_slot at all times. Zero concurrent read/write to the
- *   same memory location, eliminating C++ data races on non-atomic payload fields.
+ * - Single-Writer Path: Wait-free lockless publish. Writes to private write_slot, then atomically
+ *   swaps with clean_slot. Zero mutexes, zero spinlocks, zero heap allocations on hot path.
+ * - Reader Path: Serialized by a reader mutex to allow multiple readers to safely exchange and copy
+ *   the latest published snapshot without data races.
+ * - Guaranteed: write_slot != read_slot at all times. The writer never accesses the slot currently
+ *   held by a reader, eliminating C++ data races on non-atomic payload fields.
  */
 template <typename T>
-class alignas(64) WaitFreeTripleBuffer {
+class alignas(64) SnapshotTripleBuffer {
 public:
-    WaitFreeTripleBuffer() : clean_slot_{2}, write_slot_{0}, read_slot_{1} {}
+    SnapshotTripleBuffer() : clean_slot_{2}, write_slot_{0}, read_slot_{1} {}
 
-    /// Completely wait-free publish from single writer thread (sub-5ns latency)
+    /// Wait-free publish from single writer thread
     void publish(const T& data) noexcept {
         buffers_[write_slot_] = data;
         write_slot_ = clean_slot_.exchange(write_slot_, std::memory_order_acq_rel);
         has_data_.store(true, std::memory_order_release);
     }
 
-    /// Thread-safe snapshot read of the most recently published snapshot
+    /// Mutex-serialized snapshot read of the most recently published slot
     bool read_snapshot(T& out) const noexcept {
         if (!has_data_.load(std::memory_order_acquire)) {
             return false;
@@ -52,5 +53,8 @@ private:
     mutable uint32_t read_slot_{1};
     mutable std::mutex reader_mutex_{};
 };
+
+template <typename T>
+using WaitFreeTripleBuffer = SnapshotTripleBuffer<T>;
 
 } // namespace lob

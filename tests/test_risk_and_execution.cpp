@@ -497,7 +497,7 @@ void test_paper_depth_ledger_collisions_and_capacity_exhaustion() {
 }
 
 void test_wait_free_triple_buffer_concurrency() {
-    std::cout << "[TEST] Running Wait-Free Triple Buffer Multithreaded Concurrency...\n";
+    std::cout << "[TEST] Running Snapshot Triple Buffer Multithreaded Concurrency...\n";
 
     struct TestPayload {
         uint64_t seq{0};
@@ -506,38 +506,52 @@ void test_wait_free_triple_buffer_concurrency() {
         uint64_t c{0};
     };
 
-    WaitFreeTripleBuffer<TestPayload> buffer;
+    SnapshotTripleBuffer<TestPayload> buffer;
+    std::atomic<bool> writer_started{false};
     std::atomic<bool> stop_flag{false};
     constexpr size_t TOTAL_WRITES = 50'000;
 
     std::thread writer([&]() {
+        writer_started.store(true, std::memory_order_release);
         for (uint64_t i = 1; i <= TOTAL_WRITES; ++i) {
             TestPayload p{i, i * 2, i * 3, i * 4};
             buffer.publish(p);
+            if ((i & 0x1FF) == 0) {
+                std::this_thread::yield();
+            }
         }
         stop_flag.store(true, std::memory_order_release);
     });
 
-    uint64_t snapshots_read = 0;
+    while (!writer_started.load(std::memory_order_acquire)) std::this_thread::yield();
+
+    uint64_t concurrent_snapshots_captured = 0;
+    uint64_t intermediate_updates_observed = 0;
     while (!stop_flag.load(std::memory_order_acquire)) {
         TestPayload out{};
         if (buffer.read_snapshot(out)) {
             // Verify payload consistency (no torn reads across non-atomic fields)
             assert(out.b == out.a * 2);
             assert(out.c == out.a * 3);
-            ++snapshots_read;
+            ++concurrent_snapshots_captured;
+            if (out.seq > 0 && out.seq < TOTAL_WRITES) {
+                ++intermediate_updates_observed;
+            }
         }
+        std::this_thread::yield();
     }
     writer.join();
+
+    assert(concurrent_snapshots_captured > 0 && "Reader must capture snapshots while writer is actively publishing");
+    assert(intermediate_updates_observed > 0 && "Reader must observe intermediate updates before writer completes");
 
     TestPayload final_out{};
     bool ok = buffer.read_snapshot(final_out);
     assert(ok);
     assert(final_out.seq == TOTAL_WRITES);
     (void)ok;
-    (void)snapshots_read;
 
-    std::cout << "  -> Wait-Free Triple Buffer Multithreaded Concurrency PASSED.\n";
+    std::cout << "  -> Snapshot Triple Buffer Multithreaded Concurrency PASSED.\n";
 }
 
 void test_concurrent_dashboard_snapshot_and_workers_joined_state() {
@@ -581,17 +595,22 @@ void test_concurrent_dashboard_snapshot_and_workers_joined_state() {
 
     // Main thread continuously reads live snapshots while writer is actively publishing
     size_t live_reads = 0;
+    size_t live_reads_with_progress = 0;
     while (feeder_running.load(std::memory_order_acquire)) {
         ShmTelemetryBlock snapshot{};
         if (engine->read_telemetry_snapshot(snapshot)) {
             // Verify invariant consistency
             assert(snapshot.messages_ingested <= PACKET_COUNT);
             ++live_reads;
+            if (snapshot.messages_ingested > 0) {
+                ++live_reads_with_progress;
+            }
         }
         std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
     feeder.join();
     assert(live_reads > 0 && "Must capture live telemetry snapshots concurrently with active writer");
+    assert(live_reads_with_progress > 0 && "Must observe telemetry produced after feeding began");
 
     // Invoke dashboard once during live transition
     engine->print_status_dashboard();
