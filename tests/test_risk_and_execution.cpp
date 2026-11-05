@@ -9,6 +9,7 @@
 #include "../include/tsc_clock.hpp"
 #include "../include/paper_depth_ledger.hpp"
 #include "../include/trading_engine.hpp"
+#include "../include/ring_buffer.hpp"
 
 using namespace lob;
 

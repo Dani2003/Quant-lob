@@ -508,7 +508,7 @@ bool PipelinedTradingEngine::read_telemetry_snapshot(ShmTelemetryBlock& out) con
         return false;
     }
 
-    // 2. While workers are actively running, read an immutable snapshot from the wait-free triple buffer.
+    // 2. While workers are actively running, read an immutable snapshot from the snapshot triple buffer.
     // This mathematically guarantees write_slot != read_slot at all times, eliminating C++ data races.
     return snapshot_buffer_.read_snapshot(out);
 }
