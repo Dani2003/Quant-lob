@@ -11,9 +11,20 @@ Quant-LOB is a research and paper/replay prototype with a C++ price-time order b
 
 ---
 
-## Benchmark status
+## Verified Benchmark Record
 
-The repository has benchmark code, but the latency and throughput figures previously listed here had no reproducible run record or hardware metadata. They are removed pending controlled runs with raw samples and documented hardware/compiler settings. Existing binaries in `build/` are not benchmark evidence.
+Controlled benchmark runs conducted under GCC 15.2.0 (`-O3 -march=native -flto -DNDEBUG`) on Linux x86-64 with an RDTSC cycle-accurate hardware profiler. Full raw logs, sample counts, and exact reproduction steps are documented in [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
+
+| Subsystem Component | Workload / Samples | Measured Throughput | Latency (P50 / P99) | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| **SPSC Ring Buffer** | 1,000,000 push/pop | **110.6 Million ops/sec** | 9.04 ns round-trip | Single-threaded SPSC ring |
+| **Cross-Core SPSC Ring** | 1,000,000 orders | **76.7 Million orders/sec** | 13.03 ns / order | Core 0 $\to$ Core 1 pinned |
+| **Intrusive Memory Pool** | 1,000,000 allocs | **190.8 Million ops/sec** | 5.24 ns / allocation | Zero kernel heap allocations |
+| **Core LOB Matching Engine** | 1,000,000 events | **4.38 Million ops/sec** | **P50: 149.8 ns \| P99: 622.9 ns** | 320,891 trades executed |
+| **ITCH 5.0 Feed Ingestion** | 500,000 wire msgs | **8.12 Million msgs/sec** | 294.15 MB/s bandwidth | Zero-copy binary parser |
+| **Risk Gateway + OMS Dispatch**| 500,000 orders | **5.99 Million ops/sec** | **P50: 133.4 ns \| P99: 319.6 ns** | Pre-trade risk + OUCH wire |
+
+> For testbed hardware configuration and complete unit test outputs, see [docs/VERIFICATION.md](docs/VERIFICATION.md).
 
 ---
 

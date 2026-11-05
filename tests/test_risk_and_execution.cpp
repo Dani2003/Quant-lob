@@ -188,6 +188,36 @@ void test_order_state_machine() {
     ord = oms.submit_order(token3, 0, 160'00, 100, 100'00, t, risk);
     assert(ord->status == OrderStatus::RiskRejected);
     assert(ord->risk_result == RiskCheckResult::PriceCollarBreached);
+
+    // 7. Test Fill Racing with Pending Cancel
+    uint64_t token4 = 104;
+    ord = oms.submit_order(token4, 0, 100'00, 200, 100'00, t, risk);
+    assert(ord->status == OrderStatus::PendingNew);
+    oms.on_order_accepted(token4, 999004);
+    assert(ord->status == OrderStatus::Active);
+
+    // Client requests cancel -> transitions to PendingCancel
+    oms.request_cancel(token4);
+    assert(ord->status == OrderStatus::PendingCancel);
+
+    // A fill races in before the cancel was processed at venue: 100 shares filled
+    ok = oms.on_order_executed(token4, 100, 100'00, risk);
+    assert(ok && "Fill racing with PendingCancel must be accepted.");
+    assert(ord->status == OrderStatus::PendingCancel);
+    assert(ord->leaves_qty == 100);
+
+    // Cancel confirmation arrives for remaining 100 shares
+    ok = oms.on_order_canceled(token4, 100, risk);
+    assert(ok);
+    assert(ord->status == OrderStatus::Canceled);
+    assert(ord->leaves_qty == 0);
+
+    // 8. Invalid transitions: cannot fill or cancel an already canceled order
+    ok = oms.on_order_executed(token4, 50, 100'00, risk);
+    assert(!ok && "Cannot fill an already canceled order.");
+    ok = oms.on_order_canceled(token4, 50, risk);
+    assert(!ok && "Cannot cancel an already canceled order.");
+
     (void)ord;
     (void)ok;
 

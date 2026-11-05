@@ -146,7 +146,7 @@ public:
         return true;
     }
 
-    /// Process OUCH OrderExecuted fill
+    /// Process OUCH OrderExecuted fill (supports fills racing with pending cancellation)
     bool on_order_executed(
         uint64_t order_token,
         uint32_t executed_shares,
@@ -154,7 +154,9 @@ public:
         RiskEngine& risk_engine) noexcept 
     {
         TrackedOrder* order = find_order(order_token);
-        if (!order || (order->status != OrderStatus::Active && order->status != OrderStatus::PartiallyFilled) ||
+        if (!order || (order->status != OrderStatus::Active &&
+                       order->status != OrderStatus::PartiallyFilled &&
+                       order->status != OrderStatus::PendingCancel) ||
             executed_shares == 0 || executed_shares > order->leaves_qty) {
             return false;
         }
@@ -169,7 +171,7 @@ public:
 
         if (order->leaves_qty == 0) {
             order->status = OrderStatus::Filled;
-        } else {
+        } else if (order->status != OrderStatus::PendingCancel) {
             order->status = OrderStatus::PartiallyFilled;
         }
 
@@ -189,7 +191,9 @@ public:
     /// Transition to Canceled upon OUCH OrderCanceled message
     bool on_order_canceled(uint64_t order_token, uint32_t decrement_shares, RiskEngine& risk_engine) noexcept {
         TrackedOrder* order = find_order(order_token);
-        if (!order) return false;
+        if (!order || (order->status != OrderStatus::Active &&
+                       order->status != OrderStatus::PartiallyFilled &&
+                       order->status != OrderStatus::PendingCancel)) return false;
 
         const uint32_t released = std::min(order->leaves_qty, decrement_shares);
         risk_engine.release_order(order->side, released);
@@ -203,7 +207,7 @@ public:
     /// Transition to Rejected upon OUCH OrderRejected message
     bool on_order_rejected(uint64_t order_token, RiskEngine& risk_engine) noexcept {
         TrackedOrder* order = find_order(order_token);
-        if (!order) return false;
+        if (!order || order->status != OrderStatus::PendingNew) return false;
         risk_engine.release_order(order->side, order->leaves_qty);
         order->leaves_qty = 0;
         order->status = OrderStatus::Rejected;
