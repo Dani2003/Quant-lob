@@ -80,6 +80,10 @@ Run command:
   -> Risk Reservations & In-Flight Checks PASSED.
 [TEST] Running OMS Open-Addressing Collision Probing & Tombstones...
   -> OMS Hash Collision Probing & Tombstones PASSED.
+[TEST] Running Paper Depth Ledger Alternation, Replenishment & Partial Fills...
+  -> Paper Depth Ledger Alternation, Replenishment & Partial Fills PASSED.
+[TEST] Running Engine Shutdown & Quiescent Dashboard Reporting...
+  -> Engine Shutdown & Quiescent Dashboard Reporting PASSED.
 ==========================================================
    ALL RISK & EXECUTION INVARIANTS PASSED SUCCESSFULLY!  
 ==========================================================
@@ -183,8 +187,8 @@ To ensure intellectual honesty and clear technical scope during evaluation:
    - The engine logs sequence gaps and formats MoldUDP64 TCP gap request packets.
    - However, in replay mode, missing sequence ranges are treated as stream discontinuities; automatic out-of-band gap recovery over TCP is not wired to a live retransmission server.
 5. **Paper Execution Assumptions**:
-   - Aggressive orders execute against displayed BBO volume in paper mode, tracking consumed liquidity per price tick to prevent duplicate execution against the same displayed shares.
-   - Deeper book depletion, passive queue positioning, and venue market-data transit latencies are not simulated in this simplified paper execution loop.
+   - Aggressive orders execute against displayed BBO volume in paper mode, tracking consumed liquidity across price levels via a dedicated cache (`PaperDepthLedger`) to prevent duplicate execution across alternating prices and accurately reflect market replenishment and cancellations.
+   - Deeper multi-level queue depletion, passive queue positioning, and venue market-data transit latencies are not simulated in this simplified paper execution loop.
    - Exchange transaction fees and rebates are excluded from the paper PnL accounting (modeled at 0.0 bps).
    - The Python backtest is a synthetic demonstration tool for parameter sensitivity, not proof of financial profitability or live alpha edge.
 

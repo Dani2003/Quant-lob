@@ -187,8 +187,9 @@ int main(int argc, char** argv) {
     const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_wall - start_wall).count();
 
     std::cout << "\nReplay completed in " << elapsed_ms << " ms.\n";
-    engine->print_status_dashboard();
+    // Stop and join all worker threads first to eliminate any data race with the order book
     engine->stop();
+    engine->print_status_dashboard();
 
     std::cout << "Engine cleanly halted. Telemetry unlinked.\n";
     return 0;

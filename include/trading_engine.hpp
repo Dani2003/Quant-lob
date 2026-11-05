@@ -20,6 +20,7 @@
 #include "cpu_affinity.hpp"
 #include "shm_telemetry.hpp"
 #include "udp_publisher.hpp"
+#include "paper_depth_ledger.hpp"
 
 namespace lob {
 
@@ -106,6 +107,8 @@ public:
     [[nodiscard]] bool is_running() const noexcept { return running_.load(std::memory_order_relaxed); }
     [[nodiscard]] const ShmTelemetryBlock* get_telemetry() const noexcept { return telemetry_mgr_.get(); }
     [[nodiscard]] ShmTelemetryBlock* get_telemetry() noexcept { return telemetry_mgr_.get(); }
+    [[nodiscard]] const PaperDepthLedger& ask_depth_ledger() const noexcept { return ask_depth_ledger_; }
+    [[nodiscard]] const PaperDepthLedger& bid_depth_ledger() const noexcept { return bid_depth_ledger_; }
 
     void print_status_dashboard() const;
 
@@ -140,10 +143,8 @@ private:
     UdpMarketDataPublisher udp_pub_;
     uint64_t last_active_bid_token_{0};
     uint64_t last_active_ask_token_{0};
-    uint32_t last_consumed_ask_price_{0};
-    uint32_t consumed_ask_vol_{0};
-    uint32_t last_consumed_bid_price_{0};
-    uint32_t consumed_bid_vol_{0};
+    PaperDepthLedger ask_depth_ledger_;
+    PaperDepthLedger bid_depth_ledger_;
 
     // Pipelined Worker Threads
     std::thread matching_thread_;

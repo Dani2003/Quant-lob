@@ -325,18 +325,9 @@ void PipelinedTradingEngine::execution_thread_loop() {
                     oms_.on_order_accepted(token, token + 100000);
 
                     if (intent.action == StrategyOrderIntent::Action::AggressiveTakeBuy) {
-                        // Bounded fill: consume displayed ask liquidity at this price level
-                        uint32_t avail = intent.best_ask_vol;
-                        if (intent.bid_price == last_consumed_ask_price_) {
-                            avail = (intent.best_ask_vol > consumed_ask_vol_) ? (intent.best_ask_vol - consumed_ask_vol_) : 0;
-                        } else {
-                            last_consumed_ask_price_ = intent.bid_price;
-                            consumed_ask_vol_ = 0;
-                            avail = intent.best_ask_vol;
-                        }
-                        const uint32_t fill_qty = std::min(intent.qty, avail);
+                        // Bounded fill: consume displayed ask liquidity using multi-level ledger
+                        const uint32_t fill_qty = ask_depth_ledger_.consume(intent.bid_price, intent.best_ask_vol, intent.qty);
                         if (fill_qty > 0) {
-                            consumed_ask_vol_ += fill_qty;
                             oms_.on_order_executed(token, fill_qty, intent.bid_price, risk_engine_);
                         }
                         if (fill_qty < intent.qty) {
@@ -370,18 +361,9 @@ void PipelinedTradingEngine::execution_thread_loop() {
                     oms_.on_order_accepted(token, token + 100000);
 
                     if (intent.action == StrategyOrderIntent::Action::AggressiveTakeSell) {
-                        // Bounded fill: consume displayed bid liquidity at this price level
-                        uint32_t avail = intent.best_bid_vol;
-                        if (intent.ask_price == last_consumed_bid_price_) {
-                            avail = (intent.best_bid_vol > consumed_bid_vol_) ? (intent.best_bid_vol - consumed_bid_vol_) : 0;
-                        } else {
-                            last_consumed_bid_price_ = intent.ask_price;
-                            consumed_bid_vol_ = 0;
-                            avail = intent.best_bid_vol;
-                        }
-                        const uint32_t fill_qty = std::min(intent.qty, avail);
+                        // Bounded fill: consume displayed bid liquidity using multi-level ledger
+                        const uint32_t fill_qty = bid_depth_ledger_.consume(intent.ask_price, intent.best_bid_vol, intent.qty);
                         if (fill_qty > 0) {
-                            consumed_bid_vol_ += fill_qty;
                             oms_.on_order_executed(token, fill_qty, intent.ask_price, risk_engine_);
                         }
                         if (fill_qty < intent.qty) {
@@ -490,14 +472,28 @@ void PipelinedTradingEngine::print_status_dashboard() const {
     const auto* shm = telemetry_mgr_.get();
     if (!shm) return;
 
-    const auto bid = book_->get_best_bid();
-    const auto ask = book_->get_best_ask();
-    const uint32_t bid_px = bid.has_value() ? bid->price : shm->best_bid_price;
-    const uint32_t bid_sz = bid.has_value() ? bid->total_volume : shm->best_bid_volume;
-    const uint32_t ask_px = ask.has_value() ? ask->price : shm->best_ask_price;
-    const uint32_t ask_sz = ask.has_value() ? ask->total_volume : shm->best_ask_volume;
-    const uint32_t spread = (ask_px > bid_px && bid_px > 0) ? (ask_px - bid_px) : 0;
-    const double mid = (bid_px > 0 && ask_px > 0) ? ((bid_px + ask_px) / 2.0) : 0.0;
+    uint32_t bid_px = shm->best_bid_price;
+    uint32_t bid_sz = shm->best_bid_volume;
+    uint32_t ask_px = shm->best_ask_price;
+    uint32_t ask_sz = shm->best_ask_volume;
+    uint32_t spread = shm->spread_ticks;
+    double mid = shm->mid_price;
+
+    // When worker threads are fully stopped and joined, safely sample final book depth without thread races
+    if (!running_.load(std::memory_order_acquire)) {
+        const auto bid = book_->get_best_bid();
+        const auto ask = book_->get_best_ask();
+        if (bid.has_value()) {
+            bid_px = bid->price;
+            bid_sz = bid->total_volume;
+        }
+        if (ask.has_value()) {
+            ask_px = ask->price;
+            ask_sz = ask->total_volume;
+        }
+        spread = (ask_px > bid_px && bid_px > 0) ? (ask_px - bid_px) : 0;
+        mid = (bid_px > 0 && ask_px > 0) ? ((bid_px + ask_px) / 2.0) : 0.0;
+    }
 
     std::cout << "\n==========================================================\n";
     std::cout << "      QUANT-LOB: PAPER REPLAY & EXECUTION TELEMETRY       \n";

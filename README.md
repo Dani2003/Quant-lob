@@ -79,6 +79,7 @@ Quant-lob/
 │   ├── risk_engine.hpp          # Sub-30ns Pre-Trade Risk Engine (Fat-finger, collars, rate limit, kill-switch)
 │   ├── ouch_messages.hpp        # Packed binary NASDAQ OUCH 5.0 order entry wire serialization ('O', 'X')
 │   ├── order_state_machine.hpp  # Zero-allocation OMS lifecycle manager (65,536 resting order slots)
+│   ├── paper_depth_ledger.hpp   # Multi-level displayed depth consumption & alternation tracker
 │   ├── tca_engine.hpp           # Transaction Cost Analysis (TCA) & post-trade adverse selection markouts
 │   ├── shm_telemetry.hpp        # Lock-free POSIX Shared Memory telemetry block (/dev/shm)
 │   ├── trading_engine.hpp       # Local paper/replay worker pipeline
@@ -122,7 +123,7 @@ Quant-lob/
 - The executable accepts synthetic ITCH messages or PCAP replay. Feed handling focuses on core trading messages ('A', 'E', 'X', 'D', 'U'); administrative and regulatory messages are omitted. Sequence gaps are reported as discontinuities rather than triggering live TCP session recovery.
 - Risk checks are algorithmic guardrails (fat-finger price collars, max notional, rate limits), not legal compliance under SEC Rule 15c3-5. Outstanding quantity is reserved against position limits; borrow/locate, gross margin, and venue liquidation workflows are not implemented.
 - OUCH serialization formats valid wire bytes locally, but the service has no outbound exchange TCP session. Order acknowledgements and fill transitions are paper-mode simulations.
-- Paper execution fills are bounded by displayed BBO depth and consume liquidity per price tick to prevent duplicate fills against the same shares. Deeper book depletion, passive queue positioning, and venue market-data timing are not modeled.
+- Paper execution fills are bounded by displayed BBO depth and consume liquidity across price levels via a dedicated ledger (`PaperDepthLedger`), preventing duplicate fills during price alternation and accounting for replenishment and cancellations. Deeper book depletion, passive queue positioning, and venue market-data timing are not modeled.
 - The Python backtester uses synthetic Poisson event streams with 0.0 bps transaction fees. Its metrics are exploratory research tools, not historical backtests or live trading alpha.
 - Shared-memory dashboard data is live only while a compatible engine instance is running on POSIX. Use `python python/monitor_dashboard.py --demo` for explicitly simulated values.
 - `include/kernel_bypass_xdp.hpp` models AF_XDP descriptor rings and UMEM ring mechanics for testing; it does not attach an eBPF/XDP program or bind to a physical network card.

@@ -1,10 +1,14 @@
 #include <iostream>
 #include <cassert>
 #include <vector>
+#include <cstring>
+#include <memory>
 #include "../include/risk_engine.hpp"
 #include "../include/ouch_messages.hpp"
 #include "../include/order_state_machine.hpp"
 #include "../include/tsc_clock.hpp"
+#include "../include/paper_depth_ledger.hpp"
+#include "../include/trading_engine.hpp"
 
 using namespace lob;
 
@@ -267,6 +271,7 @@ void test_risk_reservations_and_limits() {
     risk.release_order(0, 800);
     risk.on_fill(0, 100'00, 800);
     assert(risk.current_position() == 800);
+    (void)res;
 
     std::cout << "  -> Risk Reservations & In-Flight Checks PASSED.\n";
 }
@@ -299,12 +304,16 @@ void test_oms_hash_collision_probing() {
     auto* ord_b = oms.submit_order(token_b, 1, 100'10, 100, 100'00, t, risk);
     assert(ord_b != nullptr && ord_b->order_token == token_b);
     assert(ord_a != ord_b);
+    (void)ord_a;
+    (void)ord_b;
 
     // Verify both orders can be independently found
     auto* found_a = oms.find_order(token_a);
     auto* found_b = oms.find_order(token_b);
     assert(found_a == ord_a && found_a->order_token == token_a);
     assert(found_b == ord_b && found_b->order_token == token_b);
+    (void)found_a;
+    (void)found_b;
 
     // Cancel token A -> becomes tombstone
     oms.on_order_accepted(token_a, 10001);
@@ -318,6 +327,113 @@ void test_oms_hash_collision_probing() {
     std::cout << "  -> OMS Hash Collision Probing & Tombstones PASSED.\n";
 }
 
+void test_paper_depth_ledger_price_alternation_and_replenishment() {
+    std::cout << "[TEST] Running Paper Depth Ledger Alternation, Replenishment & Partial Fills...\n";
+
+    PaperDepthLedger ledger;
+
+    // 1. Initial Fill at Price A ($150.00 = 15000 ticks): 100 shares displayed, request 100
+    uint32_t fill = ledger.consume(15000, 100, 100);
+    assert(fill == 100);
+    assert(ledger.get_consumed(15000) == 100);
+    assert(ledger.get_available(15000, 100) == 0);
+
+    // 2. Next intent shifts to Price B ($150.10 = 15010 ticks): 200 shares displayed, request 50
+    fill = ledger.consume(15010, 200, 50);
+    assert(fill == 50);
+    assert(ledger.get_consumed(15010) == 50);
+    assert(ledger.get_available(15010, 200) == 150);
+
+    // 3. Price Alternation (A -> B -> A): Return to Price A with same displayed size (100)
+    // Must NOT fill again! Available depth is 0!
+    fill = ledger.consume(15000, 100, 100);
+    assert(fill == 0 && "Price alternation must prevent duplicate execution against the same displayed shares");
+    assert(ledger.get_available(15000, 100) == 0);
+
+    // 4. Depth Replenishment at Price A: New ITCH Add orders arrive, displayed grows to 350 (+250 shares)
+    // Available depth must immediately become 250 shares!
+    assert(ledger.get_available(15000, 350) == 250);
+    fill = ledger.consume(15000, 350, 150);
+    assert(fill == 150);
+    assert(ledger.get_consumed(15000) == 250);
+    assert(ledger.get_available(15000, 350) == 100);
+
+    // Consume remaining 100 shares of replenishment
+    fill = ledger.consume(15000, 350, 200);
+    assert(fill == 100 && "Partial fill must be capped by the remaining 100 shares of replenishment");
+    assert(ledger.get_consumed(15000) == 350);
+    assert(ledger.get_available(15000, 350) == 0);
+
+    // 5. Partial fill progression at Price C (15020 ticks)
+    // Displayed = 100. Sequential requests: 30, 40, 50.
+    fill = ledger.consume(15020, 100, 30);
+    assert(fill == 30);
+    assert(ledger.get_available(15020, 100) == 70);
+
+    fill = ledger.consume(15020, 100, 40);
+    assert(fill == 40);
+    assert(ledger.get_available(15020, 100) == 30);
+
+    fill = ledger.consume(15020, 100, 50);
+    assert(fill == 30 && "Third step should be partial fill of remaining 30 shares");
+    assert(ledger.get_available(15020, 100) == 0);
+
+    fill = ledger.consume(15020, 100, 10);
+    assert(fill == 0);
+
+    // 6. External Cancellation at Price D (15030 ticks)
+    // Displayed = 100. We consume 40. Then market cancels 40 shares (displayed shrinks to 60).
+    fill = ledger.consume(15030, 100, 40);
+    assert(fill == 40);
+    // Displayed drops to 60 in market: available is 60 - 40 = 20
+    assert(ledger.get_available(15030, 60) == 20);
+    fill = ledger.consume(15030, 60, 50);
+    assert(fill == 20 && "Fill must respect market cancellations");
+    assert(ledger.get_available(15030, 60) == 0);
+    (void)fill;
+
+    std::cout << "  -> Paper Depth Ledger Alternation, Replenishment & Partial Fills PASSED.\n";
+}
+
+void test_engine_shutdown_and_quiescent_reporting() {
+    std::cout << "[TEST] Running Engine Shutdown & Quiescent Dashboard Reporting...\n";
+
+    EngineConfig config{};
+    config.symbol = "AAPL";
+    config.enable_core_pinning = false;
+    config.enable_udp_streaming = false;
+
+    auto engine = std::make_unique<PipelinedTradingEngine>(config);
+    engine->start();
+    assert(engine->is_running() == true);
+
+    // Inject a synthetic packet
+    itch::AddOrderMsg msg{};
+    std::memset(&msg, 0, sizeof(msg));
+    msg.length = (std::endian::native == std::endian::little) ? __builtin_bswap16(36) : 36;
+    msg.message_type = 'A';
+    msg.stock_locate = (std::endian::native == std::endian::little) ? __builtin_bswap16(1) : 1;
+    msg.order_ref_num = (std::endian::native == std::endian::little) ? __builtin_bswap64(1) : 1;
+    msg.buy_sell_indicator = 'B';
+    msg.shares = (std::endian::native == std::endian::little) ? __builtin_bswap32(100) : 100;
+    msg.price = (std::endian::native == std::endian::little) ? __builtin_bswap32(1500000) : 1500000;
+    std::memset(msg.stock, ' ', sizeof(msg.stock));
+    std::memcpy(msg.stock, "AAPL", 4);
+
+    bool injected = engine->inject_network_packet(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+    assert(injected);
+    (void)injected;
+
+    // Gracefully stop engine: workers join, engine becomes quiescent
+    engine->stop();
+    assert(engine->is_running() == false);
+
+    // Verify dashboard reporting can be executed on quiescent engine without data races
+    engine->print_status_dashboard();
+
+    std::cout << "  -> Engine Shutdown & Quiescent Dashboard Reporting PASSED.\n";
+}
+
 int main() {
     std::cout << "==========================================================\n";
     std::cout << "   RUNNING PHASE 4 & 5: RISK & EXECUTION TEST SUITE       \n";
@@ -329,6 +445,8 @@ int main() {
     test_order_state_machine();
     test_risk_reservations_and_limits();
     test_oms_hash_collision_probing();
+    test_paper_depth_ledger_price_alternation_and_replenishment();
+    test_engine_shutdown_and_quiescent_reporting();
 
     std::cout << "==========================================================\n";
     std::cout << "   ALL RISK & EXECUTION INVARIANTS PASSED SUCCESSFULLY!  \n";
